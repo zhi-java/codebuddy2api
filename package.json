@@ -1,0 +1,17 @@
+{
+  "name": "codebuddy-proxy",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker proxy for CodeBuddy chat completions",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node tests/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250501.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}

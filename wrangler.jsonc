@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "codebuddy-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "UPSTREAM_CHAT_COMPLETIONS_URL": "https://copilot.tencent.com/v2/chat/completions",
+    "UPSTREAM_QUOTA_URL": "https://copilot.tencent.com/v2/billing/meter/get-user-resource",
+    "UPSTREAM_TIMEOUT_SECONDS": "600",
+    "UPSTREAM_CONNECT_TIMEOUT_SECONDS": "30",
+    "CORS_ALLOW_ORIGINS": "*",
+    "CORS_ALLOW_CREDENTIALS": "false",
+    "DEBUG": "false"
+  }
+}
