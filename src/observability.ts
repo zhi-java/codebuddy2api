@@ -1,7 +1,9 @@
 /**
  * Observability 日志模块
- * 输出结构化的脱敏日志，仅包含：API 密钥（部分脱敏）、用户问题、模型输出。
- * 日志通过 console.log 以 JSON 格式输出，可在 wrangler tail 或 Cloudflare 控制台查看。
+ * 输出结构化的脱敏日志到 Cloudflare Workers Logs。
+ *
+ * Cloudflare Workers 的 console.log 在传入对象时会自动序列化为结构化字段；
+ * 传入 string 则仅作为 message 字段。本模块直接输出对象以确保字段可搜索。
  */
 
 // ── API 密钥脱敏 ────────────────────────────────────────────────────────────
@@ -96,8 +98,12 @@ export interface ObservabilityEntry {
 }
 
 /**
- * 打印一条结构化的可观测性日志（JSON 格式）。
- * 在 wrangler tail 或 Cloudflare Workers Logs 中可直接搜索 "_observability" 关键词。
+ * 打印一条结构化的可观测性日志。
+ *
+ * 直接传递对象给 console.log（而非 JSON.stringify），
+ * Cloudflare Workers 运行时会将其序列化为结构化字段与 $workers / $metadata 同级。
+ *
+ * 在 wrangler tail 中可直接搜索 model / api_key / user_input / assistant_output 等字段。
  */
 export function logObservability(
   authorization: string | null,
@@ -115,5 +121,6 @@ export function logObservability(
     assistant_output: extractAssistantOutput(responseBody),
   };
 
-  console.log(JSON.stringify({ _observability: entry }));
+  // 直接输出对象，Workers 运行时会将其展开为与 $workers / $metadata 同级的结构化字段
+  console.log(entry);
 }

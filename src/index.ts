@@ -20,7 +20,7 @@ const DEFAULT_UPSTREAM_QUOTA_URL = 'https://copilot.tencent.com/v2/billing/meter
 // ── Entry point ────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const debug = isDebugEnabled(env);
     const url = new URL(request.url);
     const path = url.pathname;
@@ -62,7 +62,7 @@ export default {
 
     // ── Route: POST /v1/chat/completions ─────────────────────────────
     if (request.method === 'POST' && path === '/v1/chat/completions') {
-      return handleChatCompletions(request, env, debug);
+      return handleChatCompletions(request, env, ctx, debug);
     }
 
     // ── Route: POST /quota — CodeBuddy credits quota proxy ───────────
@@ -130,7 +130,12 @@ export function buildCorsHeaders(env: Env, request?: Request): Headers {
 
 // ── Chat completions handler ─────────────────────────────────────────────
 
-async function handleChatCompletions(request: Request, env: Env, debug: boolean): Promise<Response> {
+async function handleChatCompletions(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  debug: boolean,
+): Promise<Response> {
   let payload: unknown;
   try {
     payload = await request.json();
@@ -180,27 +185,29 @@ async function handleChatCompletions(request: Request, env: Env, debug: boolean)
 
     // Stream request or upstream error → pass-through
     if (clientRequestedStream || !upstreamResponse.ok) {
-      // ── Observability for streaming responses ──
       if (clientRequestedStream && upstreamResponse.ok && payloadObject) {
-        return await handleStreamingObservability(upstreamResponse, env, request, payloadObject);
+        return handleStreamingObservability(upstreamResponse, env, request, ctx, payloadObject);
       }
       return buildUpstreamResponse(upstreamResponse, env, request);
     }
 
+    // Non-streaming: read full body, aggregate SSE → JSON, log
     const nonStreamingResponse = await buildNonStreamingChatResponse(upstreamResponse, env, request);
 
-    // ── Observability for non-streaming responses ──
-    try {
-      const responseClone = nonStreamingResponse.clone();
-      const responseBody = await responseClone.json() as Record<string, unknown>;
-      logObservability(
-        request.headers.get('authorization'),
-        payloadObject,
-        responseBody,
-      );
-    } catch {
-      console.warn('[WARN] Failed to emit observability log');
-    }
+    // 使用 ctx.waitUntil 确保日志在 Response 返回后也能完成输出
+    ctx.waitUntil((async () => {
+      try {
+        const responseClone = nonStreamingResponse.clone();
+        const responseBody = await responseClone.json() as Record<string, unknown>;
+        logObservability(
+          request.headers.get('authorization'),
+          payloadObject,
+          responseBody,
+        );
+      } catch {
+        console.warn('[WARN] Failed to emit observability log');
+      }
+    })());
 
     return nonStreamingResponse;
   } catch (err: unknown) {
@@ -218,14 +225,17 @@ async function handleChatCompletions(request: Request, env: Env, debug: boolean)
 /**
  * 对流式响应进行 tee 分流：
  *   stream1 → 返回客户端
- *   stream2 → 收集所有 SSE 分片，聚合后输出 observability 日志
+ *   stream2 → 收集 SSE 分片，聚合后输出 observability 日志
+ *
+ * 使用 ctx.waitUntil 确保后台日志任务在 Response 返回后不被终止。
  */
-async function handleStreamingObservability(
+function handleStreamingObservability(
   upstreamResponse: Response,
   env: Env,
   request: Request,
+  ctx: ExecutionContext,
   payloadObject: Record<string, unknown>,
-): Promise<Response> {
+): Response {
   const body = upstreamResponse.body;
   if (!body) {
     return buildUpstreamResponse(upstreamResponse, env, request);
@@ -233,10 +243,12 @@ async function handleStreamingObservability(
 
   const [clientStream, logStream] = body.tee();
 
-  // 异步收集日志流（不阻塞响应）
-  logStreamResponse(logStream, request, payloadObject).catch((err) => {
-    console.warn('[WARN] Streaming observability failed:', err);
-  });
+  // ctx.waitUntil 确保 Worker 在 Response 返回后仍然保持运行直到日志读完流
+  ctx.waitUntil(
+    logStreamResponse(logStream, request, payloadObject).catch((err) => {
+      console.warn('[WARN] Streaming observability failed:', err);
+    }),
+  );
 
   // 返回客户端流
   const responseHeaders = new Headers();
@@ -257,7 +269,8 @@ async function handleStreamingObservability(
 }
 
 /**
- * 从 tee 流的副本中收集 SSE 数据并输出 observability。
+ * 从 tee 流的副本中收集 SSE 数据并输出 observability 日志。
+ * 此函数在 ctx.waitUntil 的上下文中运行，不受 Response 返回影响。
  */
 async function logStreamResponse(
   stream: ReadableStream<Uint8Array>,
@@ -279,7 +292,7 @@ async function logStreamResponse(
       if (buffer.includes('[DONE]')) break;
     }
   } catch {
-    // 流中断不影向日志
+    // 流中断不影响日志
   }
 
   // 解析收集到的 SSE chunks

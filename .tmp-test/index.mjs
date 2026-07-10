@@ -627,7 +627,7 @@ function logObservability(authorization, payload, responseBody) {
     user_input: extractUserInput(payload),
     assistant_output: extractAssistantOutput(responseBody)
   };
-  console.log(JSON.stringify({ _observability: entry }));
+  console.log(entry);
 }
 
 // src/rate-limiter.ts
@@ -692,7 +692,7 @@ var REQUEST_EXCLUDED = /* @__PURE__ */ new Set(["host", "content-length", ...HOP
 var RESPONSE_EXCLUDED = /* @__PURE__ */ new Set(["content-length", ...HOP_BY_HOP]);
 var DEFAULT_UPSTREAM_QUOTA_URL = "https://copilot.tencent.com/v2/billing/meter/get-user-resource";
 var index_default = {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const debug = isDebugEnabled(env);
     const url = new URL(request.url);
     const path = url.pathname;
@@ -722,7 +722,7 @@ var index_default = {
       return jsonResponse(model, env);
     }
     if (request.method === "POST" && path === "/v1/chat/completions") {
-      return handleChatCompletions(request, env, debug);
+      return handleChatCompletions(request, env, ctx, debug);
     }
     if (request.method === "POST" && path === "/quota") {
       return handleQuota(request, env, debug);
@@ -770,7 +770,7 @@ function buildCorsHeaders(env, request) {
   headers.set("access-control-max-age", "86400");
   return headers;
 }
-async function handleChatCompletions(request, env, debug) {
+async function handleChatCompletions(request, env, ctx, debug) {
   let payload;
   try {
     payload = await request.json();
@@ -806,22 +806,24 @@ async function handleChatCompletions(request, env, debug) {
     }
     if (clientRequestedStream || !upstreamResponse.ok) {
       if (clientRequestedStream && upstreamResponse.ok && payloadObject) {
-        return await handleStreamingObservability(upstreamResponse, env, request, payloadObject);
+        return handleStreamingObservability(upstreamResponse, env, request, ctx, payloadObject);
       }
       return buildUpstreamResponse(upstreamResponse, env, request);
     }
     const nonStreamingResponse = await buildNonStreamingChatResponse(upstreamResponse, env, request);
-    try {
-      const responseClone = nonStreamingResponse.clone();
-      const responseBody = await responseClone.json();
-      logObservability(
-        request.headers.get("authorization"),
-        payloadObject,
-        responseBody
-      );
-    } catch {
-      console.warn("[WARN] Failed to emit observability log");
-    }
+    ctx.waitUntil((async () => {
+      try {
+        const responseClone = nonStreamingResponse.clone();
+        const responseBody = await responseClone.json();
+        logObservability(
+          request.headers.get("authorization"),
+          payloadObject,
+          responseBody
+        );
+      } catch {
+        console.warn("[WARN] Failed to emit observability log");
+      }
+    })());
     return nonStreamingResponse;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -831,15 +833,17 @@ async function handleChatCompletions(request, env, debug) {
     return new Response(`Upstream error: ${errMsg}`, { status: 502 });
   }
 }
-async function handleStreamingObservability(upstreamResponse, env, request, payloadObject) {
+function handleStreamingObservability(upstreamResponse, env, request, ctx, payloadObject) {
   const body = upstreamResponse.body;
   if (!body) {
     return buildUpstreamResponse(upstreamResponse, env, request);
   }
   const [clientStream, logStream] = body.tee();
-  logStreamResponse(logStream, request, payloadObject).catch((err) => {
-    console.warn("[WARN] Streaming observability failed:", err);
-  });
+  ctx.waitUntil(
+    logStreamResponse(logStream, request, payloadObject).catch((err) => {
+      console.warn("[WARN] Streaming observability failed:", err);
+    })
+  );
   const responseHeaders = new Headers();
   for (const [name, value] of upstreamResponse.headers) {
     if (!RESPONSE_EXCLUDED.has(name.toLowerCase())) {

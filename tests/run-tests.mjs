@@ -60,6 +60,23 @@ const baseEnv = {
   DEBUG: 'false',
 };
 
+/** Mock ExecutionContext needed by ctx.waitUntil in streaming observability */
+function makeCtx() {
+  const pending = [];
+  return {
+    waitUntil(promise) { pending.push(promise); },
+    passThroughOnException() {},
+    async flush() { await Promise.all(pending); pending.length = 0; },
+  };
+}
+
+async function callFetch(request, env) {
+  const ctx = makeCtx();
+  const response = await worker.fetch(request, env, ctx);
+  await ctx.flush();
+  return response;
+}
+
 {
   const payload = {
     messages: [
@@ -197,7 +214,7 @@ const baseEnv = {
   };
 
   try {
-    const response = await worker.fetch(
+    const response = await callFetch(
       new Request('https://worker.example/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -337,7 +354,7 @@ console.log('All tests passed');
   };
 
   try {
-    const response = await worker.fetch(
+    const response = await callFetch(
       new Request('https://worker.example/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -365,7 +382,7 @@ console.log('All tests passed');
     new Response('Bad Gateway', { status: 502, headers: { 'content-type': 'text/plain' } });
 
   try {
-    const response = await worker.fetch(
+    const response = await callFetch(
       new Request('https://worker.example/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -386,7 +403,7 @@ console.log('All tests passed');
 
 // ── 边界测试：请求体大小限制 ────────────────────────────────────────────────
 {
-  const response = await worker.fetch(
+  const response = await callFetch(
     new Request('https://worker.example/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-length': `${11 * 1024 * 1024}` }, // 11MB > 10MB
@@ -404,7 +421,7 @@ console.log('All tests passed');
     new Response('ok', { status: 200 });
 
   try {
-    const response = await worker.fetch(
+    const response = await callFetch(
       new Request('https://worker.example/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -474,7 +491,7 @@ console.log('All tests passed');
     });
 
   try {
-    const response = await worker.fetch(
+    const response = await callFetch(
       new Request('https://worker.example/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

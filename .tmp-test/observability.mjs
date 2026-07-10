@@ -50,7 +50,7 @@ function logObservability(authorization, payload, responseBody) {
     user_input: extractUserInput(payload),
     assistant_output: extractAssistantOutput(responseBody)
   };
-  console.log(JSON.stringify({ _observability: entry }));
+  console.log(entry);
 }
 export {
   extractAssistantOutput,
