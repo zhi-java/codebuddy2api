@@ -31,13 +31,6 @@ await Promise.all([
     platform: 'neutral',
   }),
   build({
-    entryPoints: ['src/observability.ts'],
-    outfile: `${outDir}/observability.mjs`,
-    bundle: true,
-    format: 'esm',
-    platform: 'neutral',
-  }),
-  build({
     entryPoints: ['src/rate-limiter.ts'],
     outfile: `${outDir}/rate-limiter.mjs`,
     bundle: true,
@@ -49,7 +42,6 @@ await Promise.all([
 const { normalizeModelId, rewritePayload } = await import(pathToFileURL(`${process.cwd()}/${outDir}/utils.mjs`));
 const { buildCorsHeaders, buildUpstreamUrl, default: worker } = await import(pathToFileURL(`${process.cwd()}/${outDir}/index.mjs`));
 const { getModelById } = await import(pathToFileURL(`${process.cwd()}/${outDir}/models.mjs`));
-const { redactApiKey, extractUserInput, extractAssistantOutput } = await import(pathToFileURL(`${process.cwd()}/${outDir}/observability.mjs`));
 
 const baseEnv = {
   UPSTREAM_CHAT_COMPLETIONS_URL: 'https://copilot.tencent.com/v2/chat/completions',
@@ -57,24 +49,10 @@ const baseEnv = {
   UPSTREAM_CONNECT_TIMEOUT_SECONDS: '30',
   CORS_ALLOW_ORIGINS: '*',
   CORS_ALLOW_CREDENTIALS: 'false',
-  DEBUG: 'false',
 };
 
-/** Mock ExecutionContext needed by ctx.waitUntil in streaming observability */
-function makeCtx() {
-  const pending = [];
-  return {
-    waitUntil(promise) { pending.push(promise); },
-    passThroughOnException() {},
-    async flush() { await Promise.all(pending); pending.length = 0; },
-  };
-}
-
 async function callFetch(request, env) {
-  const ctx = makeCtx();
-  const response = await worker.fetch(request, env, ctx);
-  await ctx.flush();
-  return response;
+  return worker.fetch(request, env);
 }
 
 {
@@ -513,93 +491,3 @@ console.log('All tests passed');
 
 console.log('All boundary tests passed');
 
-// ── Observability 模块测试 ─────────────────────────────────────────────────
-
-{
-  // redactApiKey: 正常 token 部分脱敏
-  assert.equal(redactApiKey('Bearer sk-1234567890abcdef'), 'Bearer sk-1***cdef');
-  assert.equal(redactApiKey('Bearer abcdefghijklmnop'), 'Bearer abcd***mnop');
-}
-
-{
-  // redactApiKey: 短 token
-  assert.equal(redactApiKey('Bearer short'), 'Bearer <too-short>');
-}
-
-{
-  // redactApiKey: null / 格式异常
-  assert.equal(redactApiKey(null), '<none>');
-  assert.equal(redactApiKey('Basic invalid'), 'Basic <too-short>');
-}
-
-{
-  // extractUserInput: 正常消息提取
-  const payload = {
-    messages: [
-      { role: 'system', content: 'You are helpful.' },
-      { role: 'user', content: 'Hello, how are you?' },
-      { role: 'user', content: 'Tell me about TypeScript.' },
-    ],
-  };
-  assert.equal(
-    extractUserInput(payload),
-    'Hello, how are you? | Tell me about TypeScript.',
-  );
-}
-
-{
-  // extractUserInput: content 为数组格式
-  const payload = {
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'What is this image?' },
-          { type: 'image_url', image_url: { url: 'https://example.com/img.png' } },
-        ],
-      },
-    ],
-  };
-  assert.equal(extractUserInput(payload), 'What is this image?');
-}
-
-{
-  // extractUserInput: 无 payload
-  assert.equal(extractUserInput(undefined), '<no payload>');
-}
-
-{
-  // extractUserInput: 无 user 消息
-  const payload = {
-    messages: [{ role: 'system', content: 'system prompt' }],
-  };
-  assert.equal(extractUserInput(payload), '<no user messages>');
-}
-
-{
-  // extractAssistantOutput: 正常输出提取
-  const responseBody = {
-    id: 'chatcmpl-123',
-    object: 'chat.completion',
-    model: 'glm-5.2',
-    choices: [
-      {
-        index: 0,
-        message: { role: 'assistant', content: 'TypeScript is a typed superset of JavaScript.' },
-        finish_reason: 'stop',
-      },
-    ],
-  };
-  assert.equal(
-    extractAssistantOutput(responseBody),
-    'TypeScript is a typed superset of JavaScript.',
-  );
-}
-
-{
-  // extractAssistantOutput: 无 choices
-  const responseBody = { id: 'chatcmpl-123', object: 'chat.completion', model: 'glm-5.2' };
-  assert.equal(extractAssistantOutput(responseBody), '<no output>');
-}
-
-console.log('All observability tests passed');

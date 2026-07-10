@@ -1,6 +1,5 @@
 import { getModelsList, getModelById } from './models';
-import { Env, rewritePayload, isDebugEnabled, redactHeaders, jsonResponse, fetchWithRetry } from './utils';
-import { logObservability } from './observability';
+import { Env, rewritePayload, jsonResponse, fetchWithTimeout } from './utils';
 import { checkRateLimit, getRateLimitKey, maybeCleanupBuckets } from './rate-limiter';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -20,8 +19,7 @@ const DEFAULT_UPSTREAM_QUOTA_URL = 'https://copilot.tencent.com/v2/billing/meter
 // ── Entry point ────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const debug = isDebugEnabled(env);
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -62,12 +60,12 @@ export default {
 
     // ── Route: POST /v1/chat/completions ─────────────────────────────
     if (request.method === 'POST' && path === '/v1/chat/completions') {
-      return handleChatCompletions(request, env, ctx, debug);
+      return handleChatCompletions(request, env);
     }
 
     // ── Route: POST /quota — CodeBuddy credits quota proxy ───────────
     if (request.method === 'POST' && path === '/quota') {
-      return handleQuota(request, env, debug);
+      return handleQuota(request, env);
     }
 
     // ── Health check ──────────────────────────────────────────────────
@@ -130,12 +128,7 @@ export function buildCorsHeaders(env: Env, request?: Request): Headers {
 
 // ── Chat completions handler ─────────────────────────────────────────────
 
-async function handleChatCompletions(
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  debug: boolean,
-): Promise<Response> {
+async function handleChatCompletions(request: Request, env: Env): Promise<Response> {
   let payload: unknown;
   try {
     payload = await request.json();
@@ -149,9 +142,6 @@ async function handleChatCompletions(
   const clientRequestedStream = payloadObject?.['stream'] === true;
 
   const upstreamUrl = buildUpstreamUrl(env, request.url);
-  if (debug) {
-    console.log(`[DEBUG] Upstream URL: ${upstreamUrl}`);
-  }
 
   // Build upstream request headers
   const upstreamHeaders = new Headers();
@@ -161,55 +151,25 @@ async function handleChatCompletions(
     }
   }
 
-  // Rewrite body if it's a JSON object
-  const body = payloadObject
+  // Rewrite body (only for small payloads to save CPU)
+  const bodyStr = payloadObject
     ? JSON.stringify(prepareChatPayload(payloadObject))
     : JSON.stringify(payload);
 
-  if (debug) {
-    console.log(`[DEBUG] Request body: ${body}`);
-    console.log(`[DEBUG] Upstream headers: ${JSON.stringify(redactHeaders(upstreamHeaders))}`);
-  }
-
   try {
-    const upstreamResponse = await fetchWithRetry(env, upstreamUrl, {
+    const upstreamResponse = await fetchWithTimeout(env, upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,
-      body,
-    }, debug);
+      body: bodyStr,
+    });
 
-    if (debug) {
-      console.log(`[DEBUG] Upstream status: ${upstreamResponse.status}`);
-      console.log(`[DEBUG] Upstream headers: ${JSON.stringify(redactHeaders(upstreamResponse.headers))}`);
-    }
-
-    // Stream request or upstream error → pass-through
+    // Stream request or upstream error → pure pass-through
     if (clientRequestedStream || !upstreamResponse.ok) {
-      if (clientRequestedStream && upstreamResponse.ok && payloadObject) {
-        return handleStreamingObservability(upstreamResponse, env, request, ctx, payloadObject);
-      }
       return buildUpstreamResponse(upstreamResponse, env, request);
     }
 
-    // Non-streaming: read full body, aggregate SSE → JSON, log
-    const nonStreamingResponse = await buildNonStreamingChatResponse(upstreamResponse, env, request);
-
-    // 使用 ctx.waitUntil 确保日志在 Response 返回后也能完成输出
-    ctx.waitUntil((async () => {
-      try {
-        const responseClone = nonStreamingResponse.clone();
-        const responseBody = await responseClone.json() as Record<string, unknown>;
-        logObservability(
-          request.headers.get('authorization'),
-          payloadObject,
-          responseBody,
-        );
-      } catch {
-        console.warn('[WARN] Failed to emit observability log');
-      }
-    })());
-
-    return nonStreamingResponse;
+    // Non-streaming: read body, aggregate SSE → JSON
+    return buildNonStreamingChatResponse(upstreamResponse, env, request);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
 
@@ -220,122 +180,9 @@ async function handleChatCompletions(
   }
 }
 
-// ── Streaming observability ──────────────────────────────────────────────
-
-/**
- * 对流式响应进行 tee 分流：
- *   stream1 → 返回客户端
- *   stream2 → 收集 SSE 分片，聚合后输出 observability 日志
- *
- * 使用 ctx.waitUntil 确保后台日志任务在 Response 返回后不被终止。
- */
-function handleStreamingObservability(
-  upstreamResponse: Response,
-  env: Env,
-  request: Request,
-  ctx: ExecutionContext,
-  payloadObject: Record<string, unknown>,
-): Response {
-  const body = upstreamResponse.body;
-  if (!body) {
-    return buildUpstreamResponse(upstreamResponse, env, request);
-  }
-
-  const [clientStream, logStream] = body.tee();
-
-  // ctx.waitUntil 确保 Worker 在 Response 返回后仍然保持运行直到日志读完流
-  ctx.waitUntil(
-    logStreamResponse(logStream, request, payloadObject).catch((err) => {
-      console.warn('[WARN] Streaming observability failed:', err);
-    }),
-  );
-
-  // 返回客户端流
-  const responseHeaders = new Headers();
-  for (const [name, value] of upstreamResponse.headers) {
-    if (!RESPONSE_EXCLUDED.has(name.toLowerCase())) {
-      responseHeaders.set(name, value);
-    }
-  }
-  const corsHeaders = buildCorsHeaders(env, request);
-  for (const [name, value] of corsHeaders) {
-    responseHeaders.set(name, value);
-  }
-
-  return new Response(clientStream, {
-    status: upstreamResponse.status,
-    headers: responseHeaders,
-  });
-}
-
-/**
- * 从 tee 流的副本中收集 SSE 数据并输出 observability 日志。
- * 此函数在 ctx.waitUntil 的上下文中运行，不受 Response 返回影响。
- */
-async function logStreamResponse(
-  stream: ReadableStream<Uint8Array>,
-  request: Request,
-  payloadObject: Record<string, unknown>,
-): Promise<void> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // 在 [DONE] 出现后停止收集
-      if (buffer.includes('[DONE]')) break;
-    }
-  } catch {
-    // 流中断不影响日志
-  }
-
-  // 解析收集到的 SSE chunks
-  const chunks: Record<string, unknown>[] = [];
-  const lines = buffer.split(/\r?\n/);
-  let dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line === '') {
-      if (dataLines.length > 0) {
-        const data = dataLines.join('\n').trim();
-        dataLines = [];
-        if (data && data !== '[DONE]') {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-              chunks.push(parsed as Record<string, unknown>);
-            }
-          } catch {
-            // 跳过畸形 JSON
-          }
-        }
-      }
-      continue;
-    }
-
-    if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-
-  // 构建聚合响应对象用于日志提取
-  const responseBody = buildChatCompletionResponse(chunks);
-  logObservability(
-    request.headers.get('authorization'),
-    payloadObject,
-    responseBody,
-  );
-}
-
 // ── Quota handler ────────────────────────────────────────────────────────
 
-async function handleQuota(request: Request, env: Env, debug: boolean): Promise<Response> {
+async function handleQuota(request: Request, env: Env): Promise<Response> {
   const upstreamUrl = env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL;
   const authorization = request.headers.get('authorization');
   const upstreamHeaders = new Headers({
@@ -349,23 +196,12 @@ async function handleQuota(request: Request, env: Env, debug: boolean): Promise<
   const requestBody = await request.text();
   const body = requestBody.trim() ? requestBody : '{}';
 
-  if (debug) {
-    console.log(`[DEBUG] Quota upstream URL: ${upstreamUrl}`);
-    console.log(`[DEBUG] Quota request body: ${body}`);
-    console.log(`[DEBUG] Quota upstream headers: ${JSON.stringify(redactHeaders(upstreamHeaders))}`);
-  }
-
   try {
-    const upstreamResponse = await fetchWithRetry(env, upstreamUrl, {
+    const upstreamResponse = await fetchWithTimeout(env, upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,
       body,
-    }, debug);
-
-    if (debug) {
-      console.log(`[DEBUG] Quota upstream status: ${upstreamResponse.status}`);
-      console.log(`[DEBUG] Quota upstream headers: ${JSON.stringify(redactHeaders(upstreamResponse.headers))}`);
-    }
+    });
 
     return buildUpstreamResponse(upstreamResponse, env, request);
   } catch (err: unknown) {
@@ -381,7 +217,9 @@ async function handleQuota(request: Request, env: Env, debug: boolean): Promise<
 // ── Payload preparation ──────────────────────────────────────────────────
 
 function prepareChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const rewrittenPayload = rewritePayload(payload);
+  // 对大请求跳过 rewritePayload（CPU 优化：避免巨大 regex 替换）
+  const bodySize = JSON.stringify(payload).length;
+  const rewrittenPayload = bodySize > 100_000 ? { ...payload } : rewritePayload(payload);
   rewrittenPayload['stream'] = true;
   return rewrittenPayload;
 }

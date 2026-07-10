@@ -46,15 +46,7 @@ function rewritePayload(payload) {
   }
   return payload;
 }
-var RETRYABLE_STATUSES = /* @__PURE__ */ new Set([502, 503, 504]);
-var MAX_RETRIES = 2;
-function isRetryable(err, status) {
-  if (status !== void 0 && RETRYABLE_STATUSES.has(status)) return true;
-  if (err instanceof TypeError) return true;
-  if (err instanceof DOMException) return false;
-  return false;
-}
-async function fetchWithTimeout(env, requestInfo, requestInit = {}, debug = false) {
+async function fetchWithTimeout(env, requestInfo, requestInit = {}) {
   const controller = new AbortController();
   const timeoutMs = parseFloat(env.UPSTREAM_TIMEOUT_SECONDS || "600") * 1e3;
   const connectTimeoutMs = parseFloat(env.UPSTREAM_CONNECT_TIMEOUT_SECONDS || "30") * 1e3;
@@ -65,58 +57,12 @@ async function fetchWithTimeout(env, requestInfo, requestInit = {}, debug = fals
     return response;
   } catch (err) {
     clearTimeout(timeoutId);
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (debug) console.error(`[DEBUG] Upstream error: ${errMsg}`);
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error("Upstream timeout");
     }
     throw err;
   }
 }
-async function fetchWithRetry(env, requestInfo, requestInit = {}, debug = false) {
-  let lastError;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0 && debug) {
-      console.log(`[DEBUG] Retry attempt ${attempt}/${MAX_RETRIES}`);
-    }
-    try {
-      const response = await fetchWithTimeout(env, requestInfo, requestInit, debug);
-      if (response.ok || !RETRYABLE_STATUSES.has(response.status)) {
-        return response;
-      }
-      if (attempt < MAX_RETRIES) {
-        if (debug) console.log(`[DEBUG] Retryable status ${response.status}, will retry...`);
-        await response.body?.cancel();
-        lastError = new Error(`HTTP ${response.status}`);
-        await sleep(attempt * 500);
-        continue;
-      }
-      return response;
-    } catch (err) {
-      lastError = err;
-      if (attempt < MAX_RETRIES && isRetryable(err)) {
-        if (debug) console.log(`[DEBUG] Retryable error, will retry...`);
-        await sleep(attempt * 500);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
-}
-function sleep(ms) {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-var DEBUG_TRUE_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
-function parseDebugValue(val) {
-  if (!val) return false;
-  return DEBUG_TRUE_VALUES.has(val.toLowerCase());
-}
-function isDebugEnabled(env) {
-  return parseDebugValue(env.DEBUG);
-}
-var SENSITIVE_HEADERS = /* @__PURE__ */ new Set(["authorization", "cookie", "proxy-authorization", "set-cookie"]);
 function jsonResponse(data, env, status = 200) {
   const body = JSON.stringify(data);
   const headers = new Headers({
@@ -124,13 +70,6 @@ function jsonResponse(data, env, status = 200) {
     "access-control-allow-origin": env.CORS_ALLOW_ORIGINS?.trim() || "*"
   });
   return new Response(body, { status, headers });
-}
-function redactHeaders(headers) {
-  const result = {};
-  for (const [name, value] of headers) {
-    result[name] = SENSITIVE_HEADERS.has(name.toLowerCase()) ? "<redacted>" : value;
-  }
-  return result;
 }
 
 // src/models.ts
@@ -575,61 +514,6 @@ function getModelById(id) {
   return MODEL_LIST.find((m) => m.id === normalizedId);
 }
 
-// src/observability.ts
-function redactApiKey(authorization) {
-  if (!authorization) return "<none>";
-  const match = authorization.match(/^(\S+)\s+(.+)$/);
-  if (!match) return "<malformed>";
-  const [, scheme, token] = match;
-  if (token.length <= 8) return `${scheme} <too-short>`;
-  const prefix = token.slice(0, 4);
-  const suffix = token.slice(-4);
-  return `${scheme} ${prefix}***${suffix}`;
-}
-function extractUserInput(payload) {
-  if (!payload) return "<no payload>";
-  const messages = payload["messages"];
-  if (!Array.isArray(messages)) return "<no messages>";
-  const userMessages = messages.filter(
-    (m) => m !== null && typeof m === "object" && !Array.isArray(m) && String(m["role"]) === "user"
-  ).map((m) => extractTextContent(m)).filter(Boolean);
-  return userMessages.length > 0 ? userMessages.join(" | ") : "<no user messages>";
-}
-function extractTextContent(msg) {
-  const content = msg["content"];
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content.filter(
-      (p) => p !== null && typeof p === "object" && !Array.isArray(p) && p["type"] === "text"
-    ).map((p) => String(p["text"] ?? "")).join("");
-  }
-  return "";
-}
-function extractAssistantOutput(responseBody) {
-  const choices = responseBody["choices"];
-  if (!Array.isArray(choices) || choices.length === 0) return "<no output>";
-  const firstChoice = choices[0];
-  if (!firstChoice || typeof firstChoice !== "object" || Array.isArray(firstChoice)) {
-    return "<no output>";
-  }
-  const choice = firstChoice;
-  const message = choice["message"];
-  if (!message || typeof message !== "object" || Array.isArray(message)) return "<no output>";
-  const msg = message;
-  return typeof msg["content"] === "string" ? msg["content"] : JSON.stringify(msg);
-}
-function logObservability(authorization, payload, responseBody) {
-  const model = (payload && typeof payload["model"] === "string" ? payload["model"] : "") || "unknown";
-  const entry = {
-    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    api_key: redactApiKey(authorization),
-    model,
-    user_input: extractUserInput(payload),
-    assistant_output: extractAssistantOutput(responseBody)
-  };
-  console.log(entry);
-}
-
 // src/rate-limiter.ts
 var BUCKETS = /* @__PURE__ */ new Map();
 var DEFAULT_RATE = 60;
@@ -692,8 +576,7 @@ var REQUEST_EXCLUDED = /* @__PURE__ */ new Set(["host", "content-length", ...HOP
 var RESPONSE_EXCLUDED = /* @__PURE__ */ new Set(["content-length", ...HOP_BY_HOP]);
 var DEFAULT_UPSTREAM_QUOTA_URL = "https://copilot.tencent.com/v2/billing/meter/get-user-resource";
 var index_default = {
-  async fetch(request, env, ctx) {
-    const debug = isDebugEnabled(env);
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
     const rateLimitKey = getRateLimitKey(request);
@@ -722,10 +605,10 @@ var index_default = {
       return jsonResponse(model, env);
     }
     if (request.method === "POST" && path === "/v1/chat/completions") {
-      return handleChatCompletions(request, env, ctx, debug);
+      return handleChatCompletions(request, env);
     }
     if (request.method === "POST" && path === "/quota") {
-      return handleQuota(request, env, debug);
+      return handleQuota(request, env);
     }
     if (request.method === "GET" && (path === "/" || path === "/health")) {
       return jsonResponse({ status: "ok" }, env);
@@ -770,7 +653,7 @@ function buildCorsHeaders(env, request) {
   headers.set("access-control-max-age", "86400");
   return headers;
 }
-async function handleChatCompletions(request, env, ctx, debug) {
+async function handleChatCompletions(request, env) {
   let payload;
   try {
     payload = await request.json();
@@ -780,51 +663,23 @@ async function handleChatCompletions(request, env, ctx, debug) {
   const payloadObject = typeof payload === "object" && payload !== null && !Array.isArray(payload) ? payload : void 0;
   const clientRequestedStream = payloadObject?.["stream"] === true;
   const upstreamUrl = buildUpstreamUrl(env, request.url);
-  if (debug) {
-    console.log(`[DEBUG] Upstream URL: ${upstreamUrl}`);
-  }
   const upstreamHeaders = new Headers();
   for (const [name, value] of request.headers) {
     if (!REQUEST_EXCLUDED.has(name.toLowerCase())) {
       upstreamHeaders.set(name, value);
     }
   }
-  const body = payloadObject ? JSON.stringify(prepareChatPayload(payloadObject)) : JSON.stringify(payload);
-  if (debug) {
-    console.log(`[DEBUG] Request body: ${body}`);
-    console.log(`[DEBUG] Upstream headers: ${JSON.stringify(redactHeaders(upstreamHeaders))}`);
-  }
+  const bodyStr = payloadObject ? JSON.stringify(prepareChatPayload(payloadObject)) : JSON.stringify(payload);
   try {
-    const upstreamResponse = await fetchWithRetry(env, upstreamUrl, {
+    const upstreamResponse = await fetchWithTimeout(env, upstreamUrl, {
       method: "POST",
       headers: upstreamHeaders,
-      body
-    }, debug);
-    if (debug) {
-      console.log(`[DEBUG] Upstream status: ${upstreamResponse.status}`);
-      console.log(`[DEBUG] Upstream headers: ${JSON.stringify(redactHeaders(upstreamResponse.headers))}`);
-    }
+      body: bodyStr
+    });
     if (clientRequestedStream || !upstreamResponse.ok) {
-      if (clientRequestedStream && upstreamResponse.ok && payloadObject) {
-        return handleStreamingObservability(upstreamResponse, env, request, ctx, payloadObject);
-      }
       return buildUpstreamResponse(upstreamResponse, env, request);
     }
-    const nonStreamingResponse = await buildNonStreamingChatResponse(upstreamResponse, env, request);
-    ctx.waitUntil((async () => {
-      try {
-        const responseClone = nonStreamingResponse.clone();
-        const responseBody = await responseClone.json();
-        logObservability(
-          request.headers.get("authorization"),
-          payloadObject,
-          responseBody
-        );
-      } catch {
-        console.warn("[WARN] Failed to emit observability log");
-      }
-    })());
-    return nonStreamingResponse;
+    return buildNonStreamingChatResponse(upstreamResponse, env, request);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (errMsg === "Upstream timeout") {
@@ -833,77 +688,7 @@ async function handleChatCompletions(request, env, ctx, debug) {
     return new Response(`Upstream error: ${errMsg}`, { status: 502 });
   }
 }
-function handleStreamingObservability(upstreamResponse, env, request, ctx, payloadObject) {
-  const body = upstreamResponse.body;
-  if (!body) {
-    return buildUpstreamResponse(upstreamResponse, env, request);
-  }
-  const [clientStream, logStream] = body.tee();
-  ctx.waitUntil(
-    logStreamResponse(logStream, request, payloadObject).catch((err) => {
-      console.warn("[WARN] Streaming observability failed:", err);
-    })
-  );
-  const responseHeaders = new Headers();
-  for (const [name, value] of upstreamResponse.headers) {
-    if (!RESPONSE_EXCLUDED.has(name.toLowerCase())) {
-      responseHeaders.set(name, value);
-    }
-  }
-  const corsHeaders = buildCorsHeaders(env, request);
-  for (const [name, value] of corsHeaders) {
-    responseHeaders.set(name, value);
-  }
-  return new Response(clientStream, {
-    status: upstreamResponse.status,
-    headers: responseHeaders
-  });
-}
-async function logStreamResponse(stream, request, payloadObject) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      if (buffer.includes("[DONE]")) break;
-    }
-  } catch {
-  }
-  const chunks = [];
-  const lines = buffer.split(/\r?\n/);
-  let dataLines = [];
-  for (const line of lines) {
-    if (line === "") {
-      if (dataLines.length > 0) {
-        const data = dataLines.join("\n").trim();
-        dataLines = [];
-        if (data && data !== "[DONE]") {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              chunks.push(parsed);
-            }
-          } catch {
-          }
-        }
-      }
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-  const responseBody = buildChatCompletionResponse(chunks);
-  logObservability(
-    request.headers.get("authorization"),
-    payloadObject,
-    responseBody
-  );
-}
-async function handleQuota(request, env, debug) {
+async function handleQuota(request, env) {
   const upstreamUrl = env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL;
   const authorization = request.headers.get("authorization");
   const upstreamHeaders = new Headers({
@@ -914,21 +699,12 @@ async function handleQuota(request, env, debug) {
   }
   const requestBody = await request.text();
   const body = requestBody.trim() ? requestBody : "{}";
-  if (debug) {
-    console.log(`[DEBUG] Quota upstream URL: ${upstreamUrl}`);
-    console.log(`[DEBUG] Quota request body: ${body}`);
-    console.log(`[DEBUG] Quota upstream headers: ${JSON.stringify(redactHeaders(upstreamHeaders))}`);
-  }
   try {
-    const upstreamResponse = await fetchWithRetry(env, upstreamUrl, {
+    const upstreamResponse = await fetchWithTimeout(env, upstreamUrl, {
       method: "POST",
       headers: upstreamHeaders,
       body
-    }, debug);
-    if (debug) {
-      console.log(`[DEBUG] Quota upstream status: ${upstreamResponse.status}`);
-      console.log(`[DEBUG] Quota upstream headers: ${JSON.stringify(redactHeaders(upstreamResponse.headers))}`);
-    }
+    });
     return buildUpstreamResponse(upstreamResponse, env, request);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -939,7 +715,8 @@ async function handleQuota(request, env, debug) {
   }
 }
 function prepareChatPayload(payload) {
-  const rewrittenPayload = rewritePayload(payload);
+  const bodySize = JSON.stringify(payload).length;
+  const rewrittenPayload = bodySize > 1e5 ? { ...payload } : rewritePayload(payload);
   rewrittenPayload["stream"] = true;
   return rewrittenPayload;
 }

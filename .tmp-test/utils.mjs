@@ -46,15 +46,7 @@ function rewritePayload(payload) {
   }
   return payload;
 }
-var RETRYABLE_STATUSES = /* @__PURE__ */ new Set([502, 503, 504]);
-var MAX_RETRIES = 2;
-function isRetryable(err, status) {
-  if (status !== void 0 && RETRYABLE_STATUSES.has(status)) return true;
-  if (err instanceof TypeError) return true;
-  if (err instanceof DOMException) return false;
-  return false;
-}
-async function fetchWithTimeout(env, requestInfo, requestInit = {}, debug = false) {
+async function fetchWithTimeout(env, requestInfo, requestInit = {}) {
   const controller = new AbortController();
   const timeoutMs = parseFloat(env.UPSTREAM_TIMEOUT_SECONDS || "600") * 1e3;
   const connectTimeoutMs = parseFloat(env.UPSTREAM_CONNECT_TIMEOUT_SECONDS || "30") * 1e3;
@@ -65,58 +57,12 @@ async function fetchWithTimeout(env, requestInfo, requestInit = {}, debug = fals
     return response;
   } catch (err) {
     clearTimeout(timeoutId);
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (debug) console.error(`[DEBUG] Upstream error: ${errMsg}`);
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error("Upstream timeout");
     }
     throw err;
   }
 }
-async function fetchWithRetry(env, requestInfo, requestInit = {}, debug = false) {
-  let lastError;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0 && debug) {
-      console.log(`[DEBUG] Retry attempt ${attempt}/${MAX_RETRIES}`);
-    }
-    try {
-      const response = await fetchWithTimeout(env, requestInfo, requestInit, debug);
-      if (response.ok || !RETRYABLE_STATUSES.has(response.status)) {
-        return response;
-      }
-      if (attempt < MAX_RETRIES) {
-        if (debug) console.log(`[DEBUG] Retryable status ${response.status}, will retry...`);
-        await response.body?.cancel();
-        lastError = new Error(`HTTP ${response.status}`);
-        await sleep(attempt * 500);
-        continue;
-      }
-      return response;
-    } catch (err) {
-      lastError = err;
-      if (attempt < MAX_RETRIES && isRetryable(err)) {
-        if (debug) console.log(`[DEBUG] Retryable error, will retry...`);
-        await sleep(attempt * 500);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
-}
-function sleep(ms) {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-var DEBUG_TRUE_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
-function parseDebugValue(val) {
-  if (!val) return false;
-  return DEBUG_TRUE_VALUES.has(val.toLowerCase());
-}
-function isDebugEnabled(env) {
-  return parseDebugValue(env.DEBUG);
-}
-var SENSITIVE_HEADERS = /* @__PURE__ */ new Set(["authorization", "cookie", "proxy-authorization", "set-cookie"]);
 function jsonResponse(data, env, status = 200) {
   const body = JSON.stringify(data);
   const headers = new Headers({
@@ -125,20 +71,9 @@ function jsonResponse(data, env, status = 200) {
   });
   return new Response(body, { status, headers });
 }
-function redactHeaders(headers) {
-  const result = {};
-  for (const [name, value] of headers) {
-    result[name] = SENSITIVE_HEADERS.has(name.toLowerCase()) ? "<redacted>" : value;
-  }
-  return result;
-}
 export {
-  fetchWithRetry,
   fetchWithTimeout,
-  isDebugEnabled,
   jsonResponse,
   normalizeModelId,
-  parseDebugValue,
-  redactHeaders,
   rewritePayload
 };
