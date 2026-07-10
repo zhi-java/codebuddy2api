@@ -1,6 +1,23 @@
 import { getModelsList, getModelById } from './models';
-import { Env, rewritePayload, isDebugEnabled, redactHeaders, jsonResponse } from './utils';
+import { Env, rewritePayload, isDebugEnabled, redactHeaders, jsonResponse, fetchWithRetry } from './utils';
 import { logObservability } from './observability';
+import { checkRateLimit, getRateLimitKey, maybeCleanupBuckets } from './rate-limiter';
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+
+const HOP_BY_HOP = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailer', 'transfer-encoding', 'upgrade',
+]);
+
+const REQUEST_EXCLUDED = new Set(['host', 'content-length', ...HOP_BY_HOP]);
+const RESPONSE_EXCLUDED = new Set(['content-length', ...HOP_BY_HOP]);
+
+const DEFAULT_UPSTREAM_QUOTA_URL = 'https://copilot.tencent.com/v2/billing/meter/get-user-resource';
+
+// ── Entry point ────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -8,9 +25,24 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // ── Rate limiting ─────────────────────────────────────────────────
+    const rateLimitKey = getRateLimitKey(request);
+    if (!checkRateLimit(rateLimitKey)) {
+      return new Response('Too Many Requests', { status: 429 });
+    }
+    maybeCleanupBuckets();
+
     // ── CORS preflight ────────────────────────────────────────────────
     if (request.method === 'OPTIONS') {
       return handleCorsPreflight(request, env);
+    }
+
+    // ── Body size check for POST endpoints ────────────────────────────
+    if (request.method === 'POST') {
+      const contentLength = parseInt(request.headers.get('content-length') || '0');
+      if (contentLength > MAX_BODY_SIZE) {
+        return new Response('Payload Too Large', { status: 413 });
+      }
     }
 
     // ── Route: GET /v1/models — list all models ──────────────────────
@@ -96,17 +128,7 @@ export function buildCorsHeaders(env: Env, request?: Request): Headers {
   return headers;
 }
 
-// ── Main handler ─────────────────────────────────────────────────────────
-
-const HOP_BY_HOP = new Set([
-  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-  'te', 'trailer', 'transfer-encoding', 'upgrade',
-]);
-
-const REQUEST_EXCLUDED = new Set(['host', 'content-length', ...HOP_BY_HOP]);
-const RESPONSE_EXCLUDED = new Set(['content-length', ...HOP_BY_HOP]);
-
-const DEFAULT_UPSTREAM_QUOTA_URL = 'https://copilot.tencent.com/v2/billing/meter/get-user-resource';
+// ── Chat completions handler ─────────────────────────────────────────────
 
 async function handleChatCompletions(request: Request, env: Env, debug: boolean): Promise<Response> {
   let payload: unknown;
@@ -126,7 +148,7 @@ async function handleChatCompletions(request: Request, env: Env, debug: boolean)
     console.log(`[DEBUG] Upstream URL: ${upstreamUrl}`);
   }
 
-  // Build upstream request headers (forward client headers, excluding hop-by-hop)
+  // Build upstream request headers
   const upstreamHeaders = new Headers();
   for (const [name, value] of request.headers) {
     if (!REQUEST_EXCLUDED.has(name.toLowerCase())) {
@@ -141,37 +163,33 @@ async function handleChatCompletions(request: Request, env: Env, debug: boolean)
 
   if (debug) {
     console.log(`[DEBUG] Request body: ${body}`);
-    const debugHeaders = redactHeaders(upstreamHeaders);
-    console.log(`[DEBUG] Upstream headers: ${JSON.stringify(debugHeaders)}`);
+    console.log(`[DEBUG] Upstream headers: ${JSON.stringify(redactHeaders(upstreamHeaders))}`);
   }
 
-  const controller = new AbortController();
-  const timeoutMs = parseFloat(env.UPSTREAM_TIMEOUT_SECONDS || '600') * 1000;
-  const connectTimeoutMs = parseFloat(env.UPSTREAM_CONNECT_TIMEOUT_SECONDS || '30') * 1000;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs + connectTimeoutMs);
-
   try {
-    const upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamResponse = await fetchWithRetry(env, upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,
       body,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
+    }, debug);
 
     if (debug) {
       console.log(`[DEBUG] Upstream status: ${upstreamResponse.status}`);
       console.log(`[DEBUG] Upstream headers: ${JSON.stringify(redactHeaders(upstreamResponse.headers))}`);
     }
 
+    // Stream request or upstream error → pass-through
     if (clientRequestedStream || !upstreamResponse.ok) {
+      // ── Observability for streaming responses ──
+      if (clientRequestedStream && upstreamResponse.ok && payloadObject) {
+        return await handleStreamingObservability(upstreamResponse, env, request, payloadObject);
+      }
       return buildUpstreamResponse(upstreamResponse, env, request);
     }
 
     const nonStreamingResponse = await buildNonStreamingChatResponse(upstreamResponse, env, request);
 
-    // ── Observability 日志：记录脱敏 API 密钥 + 用户问题 + 模型输出 ──
+    // ── Observability for non-streaming responses ──
     try {
       const responseClone = nonStreamingResponse.clone();
       const responseBody = await responseClone.json() as Record<string, unknown>;
@@ -181,28 +199,128 @@ async function handleChatCompletions(request: Request, env: Env, debug: boolean)
         responseBody,
       );
     } catch {
-      // observability 日志失败不影响主流程
       console.warn('[WARN] Failed to emit observability log');
     }
 
     return nonStreamingResponse;
   } catch (err: unknown) {
-    clearTimeout(timeoutId);
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (debug) console.error(`[DEBUG] Upstream error: ${errMsg}`);
 
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    if (errMsg === 'Upstream timeout') {
       return new Response('Upstream timeout', { status: 504 });
     }
     return new Response(`Upstream error: ${errMsg}`, { status: 502 });
   }
 }
 
-function prepareChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const rewrittenPayload = rewritePayload(payload);
-  rewrittenPayload['stream'] = true;
-  return rewrittenPayload;
+// ── Streaming observability ──────────────────────────────────────────────
+
+/**
+ * 对流式响应进行 tee 分流：
+ *   stream1 → 返回客户端
+ *   stream2 → 收集所有 SSE 分片，聚合后输出 observability 日志
+ */
+async function handleStreamingObservability(
+  upstreamResponse: Response,
+  env: Env,
+  request: Request,
+  payloadObject: Record<string, unknown>,
+): Promise<Response> {
+  const body = upstreamResponse.body;
+  if (!body) {
+    return buildUpstreamResponse(upstreamResponse, env, request);
+  }
+
+  const [clientStream, logStream] = body.tee();
+
+  // 异步收集日志流（不阻塞响应）
+  logStreamResponse(logStream, request, payloadObject).catch((err) => {
+    console.warn('[WARN] Streaming observability failed:', err);
+  });
+
+  // 返回客户端流
+  const responseHeaders = new Headers();
+  for (const [name, value] of upstreamResponse.headers) {
+    if (!RESPONSE_EXCLUDED.has(name.toLowerCase())) {
+      responseHeaders.set(name, value);
+    }
+  }
+  const corsHeaders = buildCorsHeaders(env, request);
+  for (const [name, value] of corsHeaders) {
+    responseHeaders.set(name, value);
+  }
+
+  return new Response(clientStream, {
+    status: upstreamResponse.status,
+    headers: responseHeaders,
+  });
 }
+
+/**
+ * 从 tee 流的副本中收集 SSE 数据并输出 observability。
+ */
+async function logStreamResponse(
+  stream: ReadableStream<Uint8Array>,
+  request: Request,
+  payloadObject: Record<string, unknown>,
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // 在 [DONE] 出现后停止收集
+      if (buffer.includes('[DONE]')) break;
+    }
+  } catch {
+    // 流中断不影向日志
+  }
+
+  // 解析收集到的 SSE chunks
+  const chunks: Record<string, unknown>[] = [];
+  const lines = buffer.split(/\r?\n/);
+  let dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line === '') {
+      if (dataLines.length > 0) {
+        const data = dataLines.join('\n').trim();
+        dataLines = [];
+        if (data && data !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              chunks.push(parsed as Record<string, unknown>);
+            }
+          } catch {
+            // 跳过畸形 JSON
+          }
+        }
+      }
+      continue;
+    }
+
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  // 构建聚合响应对象用于日志提取
+  const responseBody = buildChatCompletionResponse(chunks);
+  logObservability(
+    request.headers.get('authorization'),
+    payloadObject,
+    responseBody,
+  );
+}
+
+// ── Quota handler ────────────────────────────────────────────────────────
 
 async function handleQuota(request: Request, env: Env, debug: boolean): Promise<Response> {
   const upstreamUrl = env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL;
@@ -224,20 +342,12 @@ async function handleQuota(request: Request, env: Env, debug: boolean): Promise<
     console.log(`[DEBUG] Quota upstream headers: ${JSON.stringify(redactHeaders(upstreamHeaders))}`);
   }
 
-  const controller = new AbortController();
-  const timeoutMs = parseFloat(env.UPSTREAM_TIMEOUT_SECONDS || '600') * 1000;
-  const connectTimeoutMs = parseFloat(env.UPSTREAM_CONNECT_TIMEOUT_SECONDS || '30') * 1000;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs + connectTimeoutMs);
-
   try {
-    const upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamResponse = await fetchWithRetry(env, upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,
       body,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
+    }, debug);
 
     if (debug) {
       console.log(`[DEBUG] Quota upstream status: ${upstreamResponse.status}`);
@@ -246,21 +356,26 @@ async function handleQuota(request: Request, env: Env, debug: boolean): Promise<
 
     return buildUpstreamResponse(upstreamResponse, env, request);
   } catch (err: unknown) {
-    clearTimeout(timeoutId);
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (debug) console.error(`[DEBUG] Quota upstream error: ${errMsg}`);
 
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    if (errMsg === 'Upstream timeout') {
       return jsonResponse({ error: 'Upstream timeout' }, env, 504);
     }
     return jsonResponse({ error: 'Upstream error', message: errMsg }, env, 502);
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Payload preparation ──────────────────────────────────────────────────
+
+function prepareChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const rewrittenPayload = rewritePayload(payload);
+  rewrittenPayload['stream'] = true;
+  return rewrittenPayload;
+}
+
+// ── Response builders ────────────────────────────────────────────────────
 
 function buildUpstreamResponse(upstreamResponse: Response, env: Env, request: Request): Response {
-  // Build response headers (forward upstream headers, excluding hop-by-hop)
   const responseHeaders = new Headers();
   for (const [name, value] of upstreamResponse.headers) {
     if (!RESPONSE_EXCLUDED.has(name.toLowerCase())) {
@@ -268,7 +383,6 @@ function buildUpstreamResponse(upstreamResponse: Response, env: Env, request: Re
     }
   }
 
-  // Always attach CORS headers
   const corsHeaders = buildCorsHeaders(env, request);
   for (const [name, value] of corsHeaders) {
     responseHeaders.set(name, value);
@@ -302,6 +416,8 @@ async function buildNonStreamingChatResponse(
   });
 }
 
+// ── SSE parsing ──────────────────────────────────────────────────────────
+
 function parseSseJsonChunks(body: string): Record<string, unknown>[] {
   const chunks: Record<string, unknown>[] = [];
   let dataLines: string[] = [];
@@ -319,7 +435,7 @@ function parseSseJsonChunks(body: string): Record<string, unknown>[] {
         chunks.push(parsed as Record<string, unknown>);
       }
     } catch {
-      // Ignore malformed SSE events and continue collecting valid chunks.
+      // Ignore malformed SSE events
     }
   };
 

@@ -37,6 +37,13 @@ await Promise.all([
     format: 'esm',
     platform: 'neutral',
   }),
+  build({
+    entryPoints: ['src/rate-limiter.ts'],
+    outfile: `${outDir}/rate-limiter.mjs`,
+    bundle: true,
+    format: 'esm',
+    platform: 'neutral',
+  }),
 ]);
 
 const { normalizeModelId, rewritePayload } = await import(pathToFileURL(`${process.cwd()}/${outDir}/utils.mjs`));
@@ -271,6 +278,223 @@ const baseEnv = {
 }
 
 console.log('All tests passed');
+
+// ── 边界测试：模型ID规范化 ─────────────────────────────────────────────────
+{
+  assert.equal(normalizeModelId(''), '');
+  assert.equal(normalizeModelId('  '), '');
+  assert.equal(normalizeModelId('model[invalid]extra'), 'model[invalid]extra'); // 不匹配模式，保持原值
+  assert.equal(normalizeModelId('deepseek-v4-pro[1m]'), 'deepseek-v4-pro');
+  assert.equal(normalizeModelId('model[1m][2m]'), 'model[1m]');
+}
+
+// ── 边界测试：rewritePayload 处理非标准输入 ──────────────────────────────────
+{
+  // 空 messages
+  const payload = { messages: [] };
+  const result = rewritePayload(payload);
+  assert.deepStrictEqual(result, { messages: [] });
+}
+
+{
+  // 非数组 messages
+  const payload = { messages: 'not-an-array' };
+  const result = rewritePayload(payload);
+  assert.equal(result.messages, 'not-an-array');
+}
+
+{
+  // 无 messages
+  const payload = { model: 'glm-5.2[1m]' };
+  const result = rewritePayload(payload);
+  assert.equal(result.model, 'glm-5.2');
+}
+
+{
+  // null message
+  const payload = { messages: [null] };
+  const result = rewritePayload(payload);
+  assert.equal(result.messages[0], null);
+}
+
+{
+  // content 为数组但元素无 type
+  const payload = {
+    messages: [{ role: 'system', content: [{ text: 'hello' }] }],
+  };
+  rewritePayload(payload);
+  assert.equal(payload.messages[0].content[0].text, 'hello');
+}
+
+// ── 边界测试：超时与502错误处理 ──────────────────────────────────────────────
+{
+  const originalFetch = globalThis.fetch;
+
+  // 模拟上游超时
+  globalThis.fetch = async () => {
+    const err = new DOMException('The operation was aborted', 'AbortError');
+    throw err;
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'glm-5.2',
+          stream: false,
+          messages: [{ role: 'user', content: 'test' }],
+        }),
+      }),
+      baseEnv,
+    );
+    assert.equal(response.status, 504);
+    const body = await response.text();
+    assert.ok(body.includes('timeout'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+
+  // 模拟上游 502 错误
+  globalThis.fetch = async () =>
+    new Response('Bad Gateway', { status: 502, headers: { 'content-type': 'text/plain' } });
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'glm-5.2',
+          stream: false,
+          messages: [{ role: 'user', content: 'test' }],
+        }),
+      }),
+      baseEnv,
+    );
+    // 上游 502 应该透传
+    assert.equal(response.status, 502);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// ── 边界测试：请求体大小限制 ────────────────────────────────────────────────
+{
+  const response = await worker.fetch(
+    new Request('https://worker.example/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-length': `${11 * 1024 * 1024}` }, // 11MB > 10MB
+      body: 'x'.repeat(100),
+    }),
+    baseEnv,
+  );
+  assert.equal(response.status, 413);
+}
+
+// ── 边界测试：无效 JSON ──────────────────────────────────────────────────────
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response('ok', { status: 200 });
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: 'not-valid-json',
+      }),
+      baseEnv,
+    );
+    assert.equal(response.status, 400);
+    const body = await response.text();
+    assert.ok(body.includes('Invalid JSON'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// ── 边界测试：速率限制 ──────────────────────────────────────────────────────
+{
+  const { checkRateLimit } = await import(pathToFileURL(`${process.cwd()}/${outDir}/rate-limiter.mjs`));
+
+  // 快速消耗全部令牌
+  const key = 'test-rate-limit-key';
+  for (let i = 0; i < 10; i++) {
+    assert.ok(checkRateLimit(key, 60, 60000, 10), `Request ${i} should pass`);
+  }
+  // 第 11 次应该被限流
+  assert.equal(checkRateLimit(key, 60, 60000, 10), false, '11th request should be rate limited');
+}
+
+{
+  const { getRateLimitKey } = await import(pathToFileURL(`${process.cwd()}/${outDir}/rate-limiter.mjs`));
+
+  // CF-Connecting-IP 优先
+  const req1 = new Request('https://worker.example/test', {
+    headers: { 'CF-Connecting-IP': '1.2.3.4', 'X-Forwarded-For': '10.0.0.1' },
+  });
+  assert.equal(getRateLimitKey(req1), 'ip:1.2.3.4');
+
+  // X-Forwarded-For 回退
+  const req2 = new Request('https://worker.example/test', {
+    headers: { 'X-Forwarded-For': '10.0.0.1, 10.0.0.2' },
+  });
+  assert.equal(getRateLimitKey(req2), 'ip:10.0.0.1');
+
+  // 匿名回退
+  const req3 = new Request('https://worker.example/test');
+  assert.equal(getRateLimitKey(req3), 'anonymous');
+}
+
+// ── 边界测试：超大 SSE 响应 ──────────────────────────────────────────────────
+{
+  const originalFetch = globalThis.fetch;
+  const chunkCount = 500;
+  const sseLines = [];
+  for (let i = 0; i < chunkCount; i++) {
+    sseLines.push(`data: {"id":"chatcmpl-big","object":"chat.completion.chunk","created":1719360000,"model":"glm-5.2","choices":[{"index":0,"delta":{"content":"chunk${i}"},"finish_reason":null}]}`);
+    sseLines.push('');
+  }
+  sseLines.push('data: {"id":"chatcmpl-big","object":"chat.completion.chunk","created":1719360000,"model":"glm-5.2","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":500,"total_tokens":510}}');
+  sseLines.push('');
+  sseLines.push('data: [DONE]');
+  sseLines.push('');
+
+  globalThis.fetch = async () =>
+    new Response(sseLines.join('\n'), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'glm-5.2',
+          stream: false,
+          messages: [{ role: 'user', content: 'big test' }],
+        }),
+      }),
+      baseEnv,
+    );
+    const body = await response.json();
+    assert.equal(body.choices[0].message.content.length > 0, true);
+    assert.equal(body.usage.total_tokens, 510);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+console.log('All boundary tests passed');
 
 // ── Observability 模块测试 ─────────────────────────────────────────────────
 
