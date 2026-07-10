@@ -1,5 +1,6 @@
 import { getModelsList, getModelById } from './models';
 import { Env, rewritePayload, isDebugEnabled, redactHeaders, jsonResponse } from './utils';
+import { logObservability } from './observability';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -168,7 +169,23 @@ async function handleChatCompletions(request: Request, env: Env, debug: boolean)
       return buildUpstreamResponse(upstreamResponse, env, request);
     }
 
-    return buildNonStreamingChatResponse(upstreamResponse, env, request);
+    const nonStreamingResponse = await buildNonStreamingChatResponse(upstreamResponse, env, request);
+
+    // ── Observability 日志：记录脱敏 API 密钥 + 用户问题 + 模型输出 ──
+    try {
+      const responseClone = nonStreamingResponse.clone();
+      const responseBody = await responseClone.json() as Record<string, unknown>;
+      logObservability(
+        request.headers.get('authorization'),
+        payloadObject,
+        responseBody,
+      );
+    } catch {
+      // observability 日志失败不影响主流程
+      console.warn('[WARN] Failed to emit observability log');
+    }
+
+    return nonStreamingResponse;
   } catch (err: unknown) {
     clearTimeout(timeoutId);
     const errMsg = err instanceof Error ? err.message : String(err);
