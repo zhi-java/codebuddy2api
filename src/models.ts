@@ -18,7 +18,13 @@ interface ModelEntry {
   maxOutputTokens?: number;
   name: string;
   onlyReasoning?: boolean;
-  reasoning?: { effort?: string; summary?: string };
+  reasoning?: {
+    effort?: string;
+    summary?: string;
+    canDisableThinking?: boolean;
+    defaultEffort?: string;
+    supportedEfforts?: string[];
+  };
   relatedModels?: Record<string, string>;
   supportsImages?: boolean;
   supportsReasoning?: boolean;
@@ -47,6 +53,7 @@ interface ModelsResponse {
   requestId: string;
   data: {
     agents: AgentEntry[];
+    enterpriseId?: string;
     models: ModelEntry[];
     productFeatures: Record<string, boolean>;
   };
@@ -55,33 +62,88 @@ interface ModelsResponse {
 export const MODELS_DATA: ModelsResponse = {
   "code": 0,
   "msg": "OK",
-  "requestId": "74f2854690df43769f8279e5011dc75d",
+  "requestId": "a93702ad-4405-4372-b085-70588ae66a87",
   "data": {
     "agents": [
       {
-        "commands": ["init", "compact", "statusline", "insights"],
+        "commands": [
+          "init",
+          "compact",
+          "statusline",
+          "insights"
+        ],
         "description": "cli agent",
         "instructions": "cli-agent-prompt",
-        "modelTags": ["craft"],
+        "modelTags": [
+          "craft"
+        ],
         "models": [
-          "hy3", "glm-5.2", "glm-5.1", "glm-5.0", "glm-5.0-turbo", "glm-5v-turbo", "glm-4.7",
-          "minimax-m3", "minimax-m2.7", "kimi-k2.7", "kimi-k2.6", "kimi-k2.5",
-          "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3-2-volc"
+          "hy4-preview",
+          "hy3",
+          "hy3-x",
+          "glm-5.3",
+          "glm-5.3-flash",
+          "glm-5.2",
+          "glm-5.1",
+          "glm-5v-turbo",
+          "minimax-m3",
+          "minimax-m2.7",
+          "kimi-k3-1",
+          "kimi-k2.7",
+          "kimi-k2.6",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
         ],
         "name": "cli",
-        "tags": ["cli", "default", "model:craft"],
+        "tags": [
+          "cli",
+          "default",
+          "model:craft"
+        ],
         "tools": [
-          "Agent","Read","Write","Edit","Bash","PowerShell","Glob","Grep",
-          "EnterPlanMode","ExitPlanMode","TaskCreate","TaskGet","TaskUpdate",
-          "TaskList","WebFetch","WebSearch","TaskStop","TaskOutput","Skill",
-          "SkillManage","AskUserQuestion","StructuredOutput","ToolSearch",
-          "DeferExecuteTool","SendMessage","TeamCreate","TeamDelete",
-          "NotebookEdit","LSP","ImageGen","EnterWorktree","LeaveWorktree",
-          "CronCreate","CronDelete","CronList","DelegateTool","WeChatReply",
-          "WeComReply","ComputerUse"
+          "Agent",
+          "Read",
+          "Write",
+          "Edit",
+          "Bash",
+          "PowerShell",
+          "Glob",
+          "Grep",
+          "EnterPlanMode",
+          "ExitPlanMode",
+          "TaskCreate",
+          "TaskGet",
+          "TaskUpdate",
+          "TaskList",
+          "WebFetch",
+          "WebSearch",
+          "TaskStop",
+          "TaskOutput",
+          "Skill",
+          "SkillManage",
+          "AskUserQuestion",
+          "StructuredOutput",
+          "ToolSearch",
+          "DeferExecuteTool",
+          "SendMessage",
+          "TeamCreate",
+          "TeamDelete",
+          "NotebookEdit",
+          "LSP",
+          "ImageGen",
+          "EnterWorktree",
+          "LeaveWorktree",
+          "CronCreate",
+          "CronDelete",
+          "CronList",
+          "DelegateTool",
+          "WeChatReply",
+          "WeComReply",
+          "ComputerUse"
         ]
       }
     ],
+    "enterpriseId": "",
     "models": [
       {
         "credits": "x2.00 credits",
@@ -95,15 +157,21 @@ export const MODELS_DATA: ModelsResponse = {
         "vendor": "v"
       },
       {
-        "credits": "x0.16 credits",
+        "credits": "x0.51 credits",
         "id": "deepseek-v4-pro",
         "maxAllowedSize": 1000000,
         "maxInputTokens": 1000000,
         "maxOutputTokens": 50000,
         "name": "Deepseek-V4-Pro",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
-        "relatedModels": { "lite": "deepseek-v4-pro", "reasoning": "deepseek-v4-pro" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "deepseek-v4-pro",
+          "reasoning": "deepseek-v4-pro"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -111,15 +179,21 @@ export const MODELS_DATA: ModelsResponse = {
         "vendor": "f"
       },
       {
-        "credits": "x0.06 credits",
+        "credits": "x0.17 credits",
         "id": "deepseek-v4-flash",
         "maxAllowedSize": 1000000,
         "maxInputTokens": 1000000,
         "maxOutputTokens": 50000,
         "name": "Deepseek-V4-Flash",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
-        "relatedModels": { "lite": "deepseek-v4-flash", "reasoning": "deepseek-v4-flash" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "deepseek-v4-flash",
+          "reasoning": "deepseek-v4-flash"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -135,8 +209,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 32000,
         "name": "DeepSeek-V3.2",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
-        "relatedModels": { "lite": "deepseek-v3-2-volc", "reasoning": "deepseek-v3-2-volc" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "deepseek-v3-2-volc",
+          "reasoning": "deepseek-v3-2-volc"
+        },
         "supportsImages": false,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -151,7 +231,10 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 48000,
         "name": "MiniMax-M2.5",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
         "supportsImages": false,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -169,8 +252,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 128000,
         "name": "MiniMax-M3",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "minimax-m3", "reasoning": "minimax-m3" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "minimax-m3",
+          "reasoning": "minimax-m3"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -185,8 +274,66 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 48000,
         "name": "MiniMax-M2.7",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "minimax-m2.7", "reasoning": "minimax-m2.7" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "minimax-m2.7",
+          "reasoning": "minimax-m2.7"
+        },
+        "supportsImages": true,
+        "supportsReasoning": true,
+        "supportsToolCall": true,
+        "temperature": 1,
+        "vendor": "f"
+      },
+      {
+        "credits": "x0.79 credits",
+        "id": "glm-5.3",
+        "maxAllowedSize": 1000000,
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 48000,
+        "name": "GLM-5.3",
+        "onlyReasoning": true,
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "glm-5.3",
+          "reasoning": "glm-5.3"
+        },
+        "supportsImages": true,
+        "supportsReasoning": true,
+        "supportsToolCall": true,
+        "temperature": 1,
+        "vendor": "e"
+      },
+      {
+        "credits": "x0.06 credits",
+        "descriptionEn": "Native multimodal, excelling at complex, long-horizon autonomous tasks.",
+        "descriptionZh": "原生多模态，擅长处理复杂的长程自主任务。",
+        "id": "glm-5.3-flash",
+        "maxAllowedSize": 1000000,
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 32000,
+        "name": "GLM-5.3-Flash",
+        "onlyReasoning": true,
+        "reasoning": {
+          "canDisableThinking": true,
+          "defaultEffort": "high",
+          "summary": "auto",
+          "supportedEfforts": [
+            "low",
+            "high",
+            "max"
+          ]
+        },
+        "relatedModels": {
+          "lite": "glm-5.3-flash",
+          "reasoning": "glm-5.3-flash"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -201,8 +348,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 48000,
         "name": "GLM-5.2",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "glm-5.2", "reasoning": "glm-5.2" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "glm-5.2",
+          "reasoning": "glm-5.2"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -217,8 +370,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 48000,
         "name": "GLM-5.1",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "glm-5.1", "reasoning": "glm-5.1" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "glm-5.1",
+          "reasoning": "glm-5.1"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -233,7 +392,10 @@ export const MODELS_DATA: ModelsResponse = {
         "maxInputTokens": 200000,
         "maxOutputTokens": 48000,
         "name": "GLM-5.0",
-        "relatedModels": { "lite": "glm-5.0", "reasoning": "glm-5.0" },
+        "relatedModels": {
+          "lite": "glm-5.0",
+          "reasoning": "glm-5.0"
+        },
         "supportsImages": false,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -248,8 +410,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 48000,
         "name": "GLM-5.0-Turbo",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "glm-5.0-turbo", "reasoning": "glm-5.0-turbo" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "glm-5.0-turbo",
+          "reasoning": "glm-5.0-turbo"
+        },
         "supportsImages": false,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -257,15 +425,21 @@ export const MODELS_DATA: ModelsResponse = {
         "vendor": "e"
       },
       {
-        "credits": "x0.95 credits",
+        "credits": "x0.71 credits",
         "id": "glm-5v-turbo",
         "maxAllowedSize": 200000,
         "maxInputTokens": 200000,
         "maxOutputTokens": 64000,
         "name": "GLM-5v-Turbo",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "glm-5v-turbo", "reasoning": "glm-5v-turbo" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "glm-5v-turbo",
+          "reasoning": "glm-5v-turbo"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -307,12 +481,35 @@ export const MODELS_DATA: ModelsResponse = {
         "maxInputTokens": 128000,
         "maxOutputTokens": 32000,
         "name": "GLM-4.6V",
-        "reasoning": { "effort": "high", "summary": "auto" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
         "temperature": 1,
         "vendor": "e"
+      },
+      {
+        "credits": "x1.62 credits",
+        "descriptionEn": "Excels at complex, long-horizon autonomous tasks, with standout front-end skills and strong knowledge work and scientific reasoning",
+        "descriptionZh": "擅长处理复杂的长程自主任务，前端开发能力突出，同时在知识工作与科研推理上表现出色。",
+        "id": "kimi-k3-1",
+        "maxAllowedSize": 1000000,
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 32000,
+        "name": "Kimi-K3",
+        "onlyReasoning": true,
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "supportsImages": true,
+        "supportsReasoning": true,
+        "supportsToolCall": true,
+        "temperature": 1,
+        "vendor": "f"
       },
       {
         "credits": "x0.57 credits",
@@ -322,8 +519,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 32000,
         "name": "Kimi-K2.7-Code",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "kimi-k2.7", "reasoning": "kimi-k2.7" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "kimi-k2.7",
+          "reasoning": "kimi-k2.7"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -338,8 +541,14 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 32000,
         "name": "Kimi-K2.6",
         "onlyReasoning": true,
-        "reasoning": { "effort": "medium", "summary": "auto" },
-        "relatedModels": { "lite": "kimi-k2.6", "reasoning": "kimi-k2.6" },
+        "reasoning": {
+          "effort": "medium",
+          "summary": "auto"
+        },
+        "relatedModels": {
+          "lite": "kimi-k2.6",
+          "reasoning": "kimi-k2.6"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -354,7 +563,10 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 32000,
         "name": "Kimi-K2.5",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -369,7 +581,10 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 32000,
         "name": "Kimi-K2-Thinking",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
         "supportsImages": false,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -385,7 +600,84 @@ export const MODELS_DATA: ModelsResponse = {
         "maxOutputTokens": 64000,
         "name": "Hy3",
         "onlyReasoning": true,
-        "reasoning": { "effort": "high", "summary": "auto" },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "supportsImages": true,
+        "supportsReasoning": true,
+        "supportsToolCall": true,
+        "temperature": 0.9,
+        "top_p": 1,
+        "vendor": "j"
+      },
+      {
+        "credits": "x0.05 credits",
+        "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
+        "descriptionZh": "混元思考模型，具有增强的推理能力",
+        "disabledMultimodal": false,
+        "id": "hy3-x",
+        "maxAllowedSize": 192000,
+        "maxInputTokens": 192000,
+        "maxOutputTokens": 64000,
+        "name": "Hy3",
+        "onlyReasoning": true,
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "supportsImages": true,
+        "supportsReasoning": true,
+        "supportsToolCall": true,
+        "temperature": 0.9,
+        "top_p": 1,
+        "vendor": "j"
+      },
+      {
+        "credits": "x0.00 credits",
+        "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
+        "descriptionZh": "混元思考模型，具有增强的推理能力",
+        "disabledMultimodal": false,
+        "id": "hy4-preview",
+        "maxAllowedSize": 1000000,
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 64000,
+        "name": "Hy4 preview",
+        "onlyReasoning": true,
+        "reasoning": {
+          "canDisableThinking": false,
+          "defaultEffort": "high",
+          "summary": "auto",
+          "supportedEfforts": [
+            "high"
+          ]
+        },
+        "supportsImages": true,
+        "supportsReasoning": true,
+        "supportsToolCall": true,
+        "temperature": 0.9,
+        "top_p": 1,
+        "vendor": "j"
+      },
+      {
+        "credits": "x0.29 credits",
+        "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
+        "descriptionZh": "混元思考模型，具有增强的推理能力",
+        "disabledMultimodal": false,
+        "id": "hy4-preview-x",
+        "maxAllowedSize": 1000000,
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 64000,
+        "name": "Hy4 preview",
+        "onlyReasoning": true,
+        "reasoning": {
+          "canDisableThinking": false,
+          "defaultEffort": "high",
+          "summary": "auto",
+          "supportedEfforts": [
+            "high"
+          ]
+        },
         "supportsImages": true,
         "supportsReasoning": true,
         "supportsToolCall": true,
@@ -406,13 +698,17 @@ export const MODELS_DATA: ModelsResponse = {
       },
       {
         "credits": "x5.00 credits",
-        "id": "hunyuan-image-v3.0",
-        "name": "Hunyuan Image V3",
-        "tags": ["text-to-image"]
+        "id": "hunyuan-image-v3.0-art",
+        "name": "Hunyuan-Image-v3.0-art",
+        "tags": [
+          "text-to-image",
+          "image-to-image"
+        ]
       }
     ],
     "productFeatures": {
-      "CodeAdoptionRate": false
+      "CodeAdoptionRate": false,
+      "TodoAssistantDelegate": false
     }
   }
 };

@@ -217,9 +217,7 @@ async function handleQuota(request: Request, env: Env): Promise<Response> {
 // ── Payload preparation ──────────────────────────────────────────────────
 
 function prepareChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  // 对大请求跳过 rewritePayload（CPU 优化：避免巨大 regex 替换）
-  const bodySize = JSON.stringify(payload).length;
-  const rewrittenPayload = bodySize > 100_000 ? { ...payload } : rewritePayload(payload);
+  const rewrittenPayload = rewritePayload(payload);
   rewrittenPayload['stream'] = true;
   return rewrittenPayload;
 }
