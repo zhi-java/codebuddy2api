@@ -5,6 +5,7 @@
  * 用条形长度表达占比，同时显示原始次数——不单靠颜色传达信息。
  */
 import { computed } from 'vue';
+import { fmtTokens } from '../format';
 import type { GroupStat } from '../types';
 
 const props = defineProps<{ title: string; stats: GroupStat[]; emptyHint?: string }>();
@@ -33,6 +34,7 @@ function errorRate(stat: GroupStat): number {
         </div>
         <div class="meta">
           <span>平均 {{ stat.avgDurationMs }} ms</span>
+          <span v-if="stat.totalTokens > 0">{{ fmtTokens(stat.totalTokens) }} tokens</span>
           <span v-if="stat.errors > 0" class="bad">失败 {{ stat.errors }}（{{ errorRate(stat) }}%）</span>
           <span v-else class="ok">无失败</span>
         </div>

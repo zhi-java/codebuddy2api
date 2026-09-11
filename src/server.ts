@@ -15,6 +15,7 @@
 
 import { createNodeKv } from './node-kv';
 import { performAutoCheckins } from './scheduled';
+import { installProcessGuards } from './process-guards';
 import worker from './index';
 import type { Env } from './utils';
 
@@ -215,6 +216,12 @@ export function startServer(opts: ServerOptions = {}): { server: HttpServer; env
   scheduleDailyCheckin(env);
   server.listen(port, host);
   console.log(`[codebuddy-gateway] listening on http://${host}:${port}`);
+
+  /**
+   * 进程兜底:上游断流时 undici 可能把 socket 错误抛到事件循环顶层,
+   * 默认语义下会直接杀掉进程(所有客户端同时断服)。详见 process-guards.ts。
+   */
+  installProcessGuards();
 
   /**
    * 优雅停机:停止接受新连接,等在途请求(含 SSE 流)自然结束。

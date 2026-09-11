@@ -19,6 +19,14 @@ export interface RequestRecord {
   retried?: boolean;
   /** 失败请求的上游错误码/摘要(成功时缺失) */
   error?: string;
+  /**
+   * 上游返回的 token 用量。流式请求要等响应流结束才拿得到 usage,
+   * 因此这三个字段在 recordRequest 之后由 attachTokenUsage 补齐;
+   * totalTokens 同时充当「是否已上报」的哨兵,避免重复累加。
+   */
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 }
 
 export interface MinuteBucket {
@@ -28,6 +36,8 @@ export interface MinuteBucket {
   errors: number;
   /** 该分钟内的请求耗时总和,用于画平均延迟曲线 */
   durationSumMs: number;
+  /** 该分钟内的 token 消耗合计 */
+  totalTokens: number;
 }
 
 /** 按模型/接口聚合的统计行 */
@@ -36,6 +46,8 @@ export interface GroupStat {
   total: number;
   errors: number;
   avgDurationMs: number;
+  /** 该分组已上报的 token 消耗合计 */
+  totalTokens: number;
 }
 
 export interface MetricsSnapshot {
@@ -49,6 +61,14 @@ export interface MetricsSnapshot {
     p95Ms: number;
     p99Ms: number;
     lastMinute: number;
+    /** token 消耗合计(仅统计上游上报了 usage 的请求) */
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    /** 已上报 usage 的请求数:与 total 的比值即 token 统计覆盖率 */
+    tokenReported: number;
+    /** 窗口内每分钟的平均 token 消耗(用于展示速率) */
+    avgTokensPerMinute: number;
   };
   /** 服务进程运行信息(供「健康」区展示) */
   uptime: {
@@ -77,12 +97,21 @@ interface Bucket {
   total: number;
   errors: number;
   durationSumMs: number;
+  totalTokens: number;
 }
 
 interface MetricsState {
   buckets: Map<number, Bucket>;
   recent: RequestRecord[];
-  totals: { total: number; success: number; error: number; durationSumMs: number };
+  totals: {
+    total: number;
+    success: number;
+    error: number;
+    durationSumMs: number;
+    promptTokens: number;
+    completionTokens: number;
+    tokenReported: number;
+  };
   /** 最近若干次耗时样本(环形上限),用于分位数 */
   latencies: number[];
   startedAt: number;
@@ -98,7 +127,15 @@ function createState(): MetricsState {
   return {
     buckets: new Map<number, Bucket>(),
     recent: [],
-    totals: { total: 0, success: 0, error: 0, durationSumMs: 0 },
+    totals: {
+      total: 0,
+      success: 0,
+      error: 0,
+      durationSumMs: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      tokenReported: 0,
+    },
     latencies: [],
     startedAt: Date.now(),
   };
@@ -117,14 +154,39 @@ function prune(now: number): void {
   }
 }
 
+/**
+ * 已把 token 计入分钟桶的记录。
+ *
+ * recordRequest 与 attachTokenUsage 都可能承担「把 token 记进分钟桶」这件事,
+ * 取决于哪一步先拿到 usage:非流式在 recordRequest 之前就已解析出 usage,而
+ * 流式通常更晚——但 pipeThrough 会立即抽取上游,极短的流可能在 recordRequest
+ * 之前就结束并触发 attachTokenUsage。用 WeakSet 显式标记,保证同一记录只入桶一次。
+ */
+const bucketedRecords = new WeakSet<RequestRecord>();
+
+/** 把 token 计入所属分钟桶(幂等)。桶尚未建立时不标记,留给 recordRequest 补记。 */
+function addTokensToBucket(record: RequestRecord, total: number): void {
+  if (bucketedRecords.has(record)) return;
+  const bucket = state.buckets.get(minuteOf(record.at));
+  if (!bucket) return;
+  bucketedRecords.add(record);
+  bucket.totalTokens += total;
+}
+
 /** 记录一次已完成的代理请求。 */
 export function recordRequest(record: RequestRecord): void {
   const minute = minuteOf(record.at);
-  const bucket = state.buckets.get(minute) ?? { total: 0, errors: 0, durationSumMs: 0 };
+  const bucket = state.buckets.get(minute) ?? { total: 0, errors: 0, durationSumMs: 0, totalTokens: 0 };
   bucket.total += 1;
   bucket.durationSumMs += record.durationMs;
   if (record.status >= 400) bucket.errors += 1;
   state.buckets.set(minute, bucket);
+
+  // 非流式请求在进到这里之前就已拿到 usage,补记进桶;
+  // 流式请求此刻 token 仍缺失,稍后由 attachTokenUsage 补。
+  if (record.totalTokens !== undefined) {
+    addTokensToBucket(record, record.totalTokens);
+  }
 
   state.totals.total += 1;
   state.totals.durationSumMs += record.durationMs;
@@ -140,6 +202,40 @@ export function recordRequest(record: RequestRecord): void {
   prune(record.at);
 }
 
+/**
+ * 补齐一条请求的 token 用量。
+ *
+ * 流式请求在 recordRequest 时还不知道 token 数(usage 由上游在流末尾给出),
+ * 由响应流结束时的回调补齐。以 totalTokens 作幂等哨兵:重复调用(例如流被
+ * 取消后又触发 flush)不会重复累加,缺失 usage 的请求则永远保持 undefined。
+ */
+export function attachTokenUsage(
+  record: RequestRecord,
+  usage: { promptTokens: number; completionTokens: number },
+): void {
+  if (record.totalTokens !== undefined) return;
+
+  const toCount = (value: number): number => {
+    const n = Math.round(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const prompt = toCount(usage.promptTokens);
+  const completion = toCount(usage.completionTokens);
+  const total = prompt + completion;
+
+  record.promptTokens = prompt;
+  record.completionTokens = completion;
+  record.totalTokens = total;
+
+  state.totals.promptTokens += prompt;
+  state.totals.completionTokens += completion;
+  state.totals.tokenReported += 1;
+
+  // 桶可能尚未建立(流先于 recordRequest 结束)或已被 prune(超长流跨出窗口),
+  // 两种情况都交给 addTokensToBucket 处理,不会重复累加。
+  addTokensToBucket(record, total);
+}
+
 /** 线性插值分位数(样本已排序) */
 function percentile(sorted: number[], ratio: number): number {
   if (sorted.length === 0) return 0;
@@ -149,12 +245,13 @@ function percentile(sorted: number[], ratio: number): number {
 
 /** 按 key 聚合统计(默认取最近 200 条明细,足够反映当前热度) */
 function groupBy(field: 'model' | 'path'): GroupStat[] {
-  const map = new Map<string, { total: number; errors: number; durationSumMs: number }>();
+  const map = new Map<string, { total: number; errors: number; durationSumMs: number; totalTokens: number }>();
   for (const record of state.recent) {
     const key = (field === 'model' ? record.model : record.path) || '(未知)';
-    const entry = map.get(key) ?? { total: 0, errors: 0, durationSumMs: 0 };
+    const entry = map.get(key) ?? { total: 0, errors: 0, durationSumMs: 0, totalTokens: 0 };
     entry.total += 1;
     entry.durationSumMs += record.durationMs;
+    entry.totalTokens += record.totalTokens ?? 0;
     if (record.status >= 400) entry.errors += 1;
     map.set(key, entry);
   }
@@ -164,6 +261,7 @@ function groupBy(field: 'model' | 'path'): GroupStat[] {
       total: value.total,
       errors: value.errors,
       avgDurationMs: Math.round(value.durationSumMs / value.total),
+      totalTokens: value.totalTokens,
     }))
     .sort((a, b) => b.total - a.total)
     .slice(0, 8);
@@ -182,6 +280,7 @@ export function metricsSnapshot(now = Date.now()): MetricsSnapshot {
       total: bucket?.total ?? 0,
       errors: bucket?.errors ?? 0,
       durationSumMs: bucket?.durationSumMs ?? 0,
+      totalTokens: bucket?.totalTokens ?? 0,
     });
   }
 
@@ -195,6 +294,10 @@ export function metricsSnapshot(now = Date.now()): MetricsSnapshot {
     else class2xx += 1;
   }
 
+  const uptimeMs = Math.max(0, now - state.startedAt);
+  // 平均速率按「进程实际运行过的分钟数」算,避免刚启动时被 60 分钟窗口稀释
+  const activeMinutes = Math.min(WINDOW_MINUTES, Math.max(1, Math.ceil(uptimeMs / MINUTE_MS)));
+
   return {
     totals: {
       total: state.totals.total,
@@ -206,8 +309,13 @@ export function metricsSnapshot(now = Date.now()): MetricsSnapshot {
       p95Ms: percentile(sorted, 0.95),
       p99Ms: percentile(sorted, 0.99),
       lastMinute: state.buckets.get(currentMinute)?.total ?? 0,
+      promptTokens: state.totals.promptTokens,
+      completionTokens: state.totals.completionTokens,
+      totalTokens: state.totals.promptTokens + state.totals.completionTokens,
+      tokenReported: state.totals.tokenReported,
+      avgTokensPerMinute: Math.round((state.totals.promptTokens + state.totals.completionTokens) / activeMinutes),
     },
-    uptime: { startedAt: state.startedAt, uptimeMs: Math.max(0, now - state.startedAt) },
+    uptime: { startedAt: state.startedAt, uptimeMs },
     series,
     byModel: groupBy('model'),
     byPath: groupBy('path'),
@@ -226,5 +334,8 @@ export function resetMetrics(): void {
   state.totals.success = 0;
   state.totals.error = 0;
   state.totals.durationSumMs = 0;
+  state.totals.promptTokens = 0;
+  state.totals.completionTokens = 0;
+  state.totals.tokenReported = 0;
   state.startedAt = Date.now();
 }

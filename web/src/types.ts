@@ -61,6 +61,10 @@ export interface RequestRecord {
   credentialId?: string;
   retried?: boolean;
   error?: string;
+  /** 上游上报的 token 用量(流式请求在流结束后回填) */
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 }
 
 export interface MinuteBucket {
@@ -68,6 +72,7 @@ export interface MinuteBucket {
   total: number;
   errors: number;
   durationSumMs: number;
+  totalTokens: number;
 }
 
 export interface GroupStat {
@@ -75,6 +80,7 @@ export interface GroupStat {
   total: number;
   errors: number;
   avgDurationMs: number;
+  totalTokens: number;
 }
 
 export interface MetricsSnapshot {
@@ -88,6 +94,12 @@ export interface MetricsSnapshot {
     p95Ms: number;
     p99Ms: number;
     lastMinute: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    /** 已上报 usage 的请求数(与 total 的比值即覆盖率) */
+    tokenReported: number;
+    avgTokensPerMinute: number;
   };
   uptime: { startedAt: number; uptimeMs: number };
   series: MinuteBucket[];

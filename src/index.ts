@@ -19,9 +19,17 @@ import { Env, jsonResponse, fetchWithTimeout, normalizeModelId, resolveRateLimit
 import { handleAdmin } from './admin';
 import { renderLandingPage, renderPublicModelsPage, renderHealthPage } from './admin-ui';
 import { checkRateLimit, getRateLimitKey, maybeCleanupBuckets } from './rate-limiter';
-import { createSseTransformer, keepAliveTransform, parseSseJsonChunks, SSE_DONE } from './protocol/sse';
+import {
+  createSseTransformer,
+  keepAliveTransform,
+  parseSseJsonChunks,
+  SSE_DONE,
+  usageTap,
+  extractUsageFromSseText,
+  type TokenUsage,
+} from './protocol/sse';
 import { prepareChatPayload, sanitizeChatPayload } from './payload';
-import { recordRequest } from './metrics';
+import { recordRequest, attachTokenUsage, type RequestRecord } from './metrics';
 import { pushLog } from './logs';
 import { anthropicRequestToChat, AnthropicConverter } from './protocol/anthropic';
 import { responsesRequestToChat, ResponsesConverter } from './protocol/responses';
@@ -268,6 +276,17 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
   let attempts = 0;
   let usedCredentialId: string | undefined;
 
+  // 记录对象先建好:流式请求的 usage 由上游在流末尾给出,需要等响应流结束后
+  // 由 usageTap 回填,所以不能在 handler 返回时一次性构造。
+  const record: RequestRecord = {
+    at: startedAt,
+    path: '/v1/chat/completions',
+    model: requestedModel,
+    status: 0,
+    durationMs: 0,
+  };
+  const onUsage = (usage: TokenUsage): void => attachTokenUsage(record, usage);
+
   const response = await withCredential(request, env, async (credential, clientKey) => {
     attempts += 1;
     usedCredentialId = credential.credentialId;
@@ -297,31 +316,30 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
       if (clientRequestedStream) {
         return buildUpstreamResponse(upstreamResponse, env, request, {
           stripReasoning: !exposeReasoning,
+          onUsage,
         });
       }
 
       // Non-streaming: read body, aggregate SSE → JSON
-      return buildNonStreamingChatResponse(upstreamResponse, env, request, exposeReasoning);
+      return buildNonStreamingChatResponse(upstreamResponse, env, request, exposeReasoning, onUsage);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
 
+      // 上游响应头已到达,失败发生在读取/聚合阶段 → 上游可能已生成并计费,
+      // 标记为本地失败以阻止凭证故障转移重放。
       if (errMsg === 'Upstream timeout') {
-        return new Response('Upstream timeout', { status: 504 });
+        return localFailureResponse('Upstream timeout', 504);
       }
-      return new Response(`Upstream error: ${errMsg}`, { status: 502 });
+      return localFailureResponse(`Upstream error: ${errMsg}`, 502);
     }
   });
 
-  recordRequest({
-    at: Date.now(),
-    path: '/v1/chat/completions',
-    model: requestedModel,
-    status: response.status,
-    durationMs: Date.now() - startedAt,
-    credentialId: usedCredentialId,
-    retried: attempts > 1,
-    error: response.status >= 400 ? requestErrorSummaries.get(request) : undefined,
-  });
+  record.status = response.status;
+  record.durationMs = Date.now() - startedAt;
+  record.credentialId = usedCredentialId;
+  record.retried = attempts > 1;
+  if (response.status >= 400) record.error = requestErrorSummaries.get(request);
+  recordRequest(record);
   return response;
 }
 
@@ -422,6 +440,16 @@ async function handleProtocolEndpoint(
   let attempts = 0;
   let usedCredentialId: string | undefined;
 
+  // 同 chat 链路:usage 在流末尾才到,先建记录对象由旁路回填
+  const record: RequestRecord = {
+    at: startedAt,
+    path,
+    model: requestedModel,
+    status: 0,
+    durationMs: 0,
+  };
+  const onUsage = (usage: TokenUsage): void => attachTokenUsage(record, usage);
+
   const response = await withCredential(request, env, async (credential, clientKey) => {
     attempts += 1;
     usedCredentialId = credential.credentialId;
@@ -483,8 +511,10 @@ async function handleProtocolEndpoint(
         const upstreamBody = upstreamResponse.body
           ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
 
-        // 转换后的事件流再叠加心跳保活
+        // 用量旁路必须挂在协议转换之前:转换后的目标协议事件不再保留上游 usage。
+        // 顺序:观察上游原始 SSE → 协议转换 → 心跳保活
         const stream = upstreamBody
+          .pipeThrough(usageTap(onUsage))
           .pipeThrough(transform)
           .pipeThrough(keepAliveTransform());
 
@@ -496,6 +526,8 @@ async function handleProtocolEndpoint(
 
       // 非流式:聚合上游 SSE → 目标协议对象
       const upstreamText = await upstreamResponse.text();
+      const usage = extractUsageFromSseText(upstreamText);
+      if (usage) onUsage(usage);
       const thinkingOptions = resolveThinking(body, env);
       const responseBody =
         kind === 'anthropic'
@@ -519,23 +551,20 @@ async function handleProtocolEndpoint(
       });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      // 同 chat 链路:读取/转换阶段的失败不得触发凭证重放,否则重复扣费。
       if (errMsg === 'Upstream timeout') {
-        return new Response('Upstream timeout', { status: 504 });
+        return localFailureResponse('Upstream timeout', 504);
       }
-      return new Response(`Upstream error: ${errMsg}`, { status: 502 });
+      return localFailureResponse(`Upstream error: ${errMsg}`, 502);
     }
   });
 
-  recordRequest({
-    at: Date.now(),
-    path,
-    model: requestedModel,
-    status: response.status,
-    durationMs: Date.now() - startedAt,
-    credentialId: usedCredentialId,
-    retried: attempts > 1,
-    error: response.status >= 400 ? requestErrorSummaries.get(request) : undefined,
-  });
+  record.status = response.status;
+  record.durationMs = Date.now() - startedAt;
+  record.credentialId = usedCredentialId;
+  record.retried = attempts > 1;
+  if (response.status >= 400) record.error = requestErrorSummaries.get(request);
+  recordRequest(record);
   return response;
 }
 
@@ -768,7 +797,7 @@ function buildUpstreamResponse(
   upstreamResponse: Response,
   env: Env,
   request: Request,
-  options: { stripReasoning?: boolean } = {},
+  options: { stripReasoning?: boolean; onUsage?: (usage: TokenUsage) => void } = {},
 ): Response {
   const responseHeaders = new Headers();
   upstreamResponse.headers.forEach((value, name) => {
@@ -791,6 +820,10 @@ function buildUpstreamResponse(
           () => SSE_DONE,
         ));
     }
+    // 用量旁路:纯观察,不改动字节流
+    if (options.onUsage) {
+      body = body.pipeThrough(usageTap(options.onUsage));
+    }
     body = body.pipeThrough(keepAliveTransform());
   }
 
@@ -805,17 +838,29 @@ async function buildNonStreamingChatResponse(
   env: Env,
   request: Request,
   includeReasoning: boolean,
+  onUsage?: (usage: TokenUsage) => void,
 ): Promise<Response> {
-  const chunks = parseSseJsonChunks(await upstreamResponse.text());
+  const upstreamText = await upstreamResponse.text();
+  const chunks = parseSseJsonChunks(upstreamText);
+
+  // 用量旁路:非流式路径已把整条 SSE 读进内存,顺带解析不增加成本
+  if (onUsage) {
+    const usage = extractUsageFromSseText(upstreamText);
+    if (usage) onUsage(usage);
+  }
 
   // 空流兜底:上游 200 但没有任何事件(罕见的静默断流),避免客户端收到
-  // 空 choices 的 200 而永久等待
+  // 空 choices 的 200 而永久等待。
+  // 注意:上游已完整响应(200 + body 读完)才走到这里,换凭证重放既救不回来
+  // (同一 prompt 大概率同样结果),又可能让已完成计费的调用再扣一次,故标记本地失败。
   if (chunks.length === 0) {
-    return jsonResponse(
+    const emptyStream = jsonResponse(
       { error: 'Upstream returned empty stream', message: 'No SSE events received from upstream' },
       env,
       502,
     );
+    emptyStream.headers.set(LOCAL_FAILURE_HEADER, '1');
+    return emptyStream;
   }
 
   const responseBody = buildChatCompletionResponse(chunks, includeReasoning);
@@ -954,18 +999,36 @@ const requestErrorSummaries = new WeakMap<Request, string>();
  */
 const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 const EMPTY_UPSTREAM_RESPONSE_HEADER = 'x-gateway-empty-upstream';
+const LOCAL_FAILURE_HEADER = 'x-gateway-local-failure';
 
 function shouldRetryWithNextCredential(response: Response, credential: UpstreamCredential): boolean {
   // 透传 ck_/JWT 没有网关托管的候选集,不能盲目重放请求。
   if (!credential.credentialId) return false;
+  // 网关自身产生的失败(读取中断/超时/空流兜底)不是上游拒绝:上游此时
+  // 多半已经生成内容并按量计费,换凭证重发等于让同一条 prompt 扣两次积分。
+  // 这类响应由网关打标记,一律不参与故障转移。上游真实返回的同名状态码
+  // (502/503/504 等)不带标记,仍按渠道故障正常重试。
+  if (response.headers.get(LOCAL_FAILURE_HEADER) === '1') return false;
   // 400 只有在上游完全没有 body 时才按渠道故障处理;有明确错误内容的
   // 400 通常是请求本身有问题,重试其它账号没有意义。
   return RETRYABLE_UPSTREAM_STATUSES.has(response.status) ||
     (response.status === 400 && response.headers.get(EMPTY_UPSTREAM_RESPONSE_HEADER) === '1');
 }
 
+/**
+ * 构造网关自身产生的失败响应(非上游返回)。标记为本地失败后,凭证故障转移
+ * 会跳过它 —— 重放一个可能已完成生成的上游请求会造成重复扣费。
+ */
+function localFailureResponse(body: string, status: number): Response {
+  return new Response(body, {
+    status,
+    headers: { [LOCAL_FAILURE_HEADER]: '1' },
+  });
+}
+
 function clearRetryMetadata(response: Response): Response {
   response.headers.delete(EMPTY_UPSTREAM_RESPONSE_HEADER);
+  response.headers.delete(LOCAL_FAILURE_HEADER);
   return response;
 }
 
@@ -1062,7 +1125,22 @@ async function withCredential(
       throw err;
     }
 
-    const response = await handler(resolved.credential, resolved.clientKey);
+    // handler 内部的 try 只覆盖上游交互,prepareChatPayload 等前置步骤在它之外;
+    // 极端网络故障(上游断流触发 undici body controller 竞态)也可能把非业务异常
+    // 抛出到这里。此时上游请求已经发出、可能已经计费,绝不能重放,直接按本地失败
+    // 返回 —— 让客户端拿到可读的 502,而不是连接被重置。
+    let response: Response;
+    try {
+      response = await handler(resolved.credential, resolved.clientKey);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      pushLog('error', 'handler_threw', `请求处理抛出异常: ${message}`, {
+        path: new URL(request.url).pathname,
+        credentialId: resolved.credential.credentialId,
+      });
+      // 这是最终响应,返回前清掉内部标记,避免暴露网关实现细节
+      return clearRetryMetadata(localFailureResponse(`Upstream error: ${message}`, 502));
+    }
     const shouldRetry = shouldRetryWithNextCredential(response, resolved.credential);
     if (response.status >= 400) {
       await logUpstreamFailure(request, response, resolved.credential, shouldRetry);

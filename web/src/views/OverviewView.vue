@@ -25,7 +25,7 @@ import StatCard from '../components/StatCard.vue';
 import TrafficChart from '../components/TrafficChart.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
-import { fmtClock, fmtDuration, fmtMs, num } from '../format';
+import { fmtClock, fmtDuration, fmtMs, fmtTokens, num } from '../format';
 import { navigate } from '../router';
 import { refreshAll, store } from '../store';
 import type { MetricsSnapshot, RequestRecord } from '../types';
@@ -56,6 +56,18 @@ const counts = computed(() => store.state?.counts);
 /** KPI 迷你趋势：把分钟序列压成 0-1 相对值 */
 const trend = computed(() => (metrics.value?.series ?? []).slice(-30).map((item) => item.total));
 const errorTrend = computed(() => (metrics.value?.series ?? []).slice(-30).map((item) => item.errors));
+const tokenTrend = computed(() => (metrics.value?.series ?? []).slice(-30).map((item) => item.totalTokens));
+
+/**
+ * token 统计覆盖率:只有上游上报了 usage 的请求才计入 token 汇总。
+ * 明确显示覆盖率,避免把「缺失用量」误读成「没有消耗」。
+ */
+const tokenCoverage = computed(() => {
+  const current = totals.value;
+  if (!current || current.total === 0) return '暂无请求';
+  const { tokenReported, total } = current;
+  return `${tokenReported}/${total} 次上报用量（${Math.round((tokenReported / total) * 100)}%）`;
+});
 
 const healthy = computed(() => {
   if (!counts.value || counts.value.credentials === 0) return null;
@@ -90,6 +102,12 @@ const recentColumns: DataTableColumns<RequestRecord> = [
       ),
   },
   { title: '耗时', key: 'durationMs', width: 88, render: (row) => fmtMs(row.durationMs) },
+  {
+    title: 'Token',
+    key: 'totalTokens',
+    width: 96,
+    render: (row) => h('span', { class: 'mono' }, row.totalTokens ? fmtTokens(row.totalTokens) : '—'),
+  },
   {
     title: '凭证',
     key: 'credentialId',
@@ -173,6 +191,20 @@ onMounted(refresh);
         :tone="(totals?.p95Ms ?? 0) > 30_000 ? 'warn' : 'default'"
         :trend="errorTrend"
       />
+      <StatCard
+        label="Token 消耗"
+        :value="fmtTokens(totals?.totalTokens)"
+        :hint="`输入 ${fmtTokens(totals?.promptTokens)} · 输出 ${fmtTokens(totals?.completionTokens)}`"
+        icon="activity"
+        tone="info"
+        :trend="tokenTrend"
+      />
+      <StatCard
+        label="Token 速率"
+        :value="totals ? `${fmtTokens(totals.avgTokensPerMinute)}/min` : '—'"
+        :hint="tokenCoverage"
+        icon="clock"
+      />
     </div>
 
     <NCard size="small" class="chart-card">
@@ -222,7 +254,7 @@ onMounted(refresh);
           :bordered="false"
           :single-line="false"
           size="small"
-          :scroll-x="740"
+          :scroll-x="836"
           :pagination="false"
         >
           <template #empty>

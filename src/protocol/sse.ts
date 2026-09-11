@@ -209,3 +209,75 @@ export function keepAliveTransform(intervalMs = 15_000): TransformStream<Uint8Ar
  * 生成一个空的 200 SSE 响应的辅助串(避免上游异常时客户端卡死)。
  */
 export const SSE_DONE = 'data: [DONE]\n\n';
+
+/** 上游在流末尾给出的 token 用量 */
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/**
+ * SSE 用量旁路:原样透传字节,顺带提取上游在**流末尾**给出的 usage。
+ *
+ * 流式转发是纯透传(不解析、不聚合),所以这里先 enqueue 再解析 —— 解析失败
+ * 或耗时都不会影响转发本身。只认第一个带 usage 的事件,重复事件不累加,
+ * 由调用方用幂等写入兜底。
+ */
+export function usageTap(onUsage: (usage: TokenUsage) => void): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  const reader = createSseReader();
+  let reported = false;
+
+  const inspect = (chunks: SseChunk[]): void => {
+    if (reported) return;
+    for (const chunk of chunks) {
+      const usage = chunk['usage'];
+      if (!usage || typeof usage !== 'object' || Array.isArray(usage)) continue;
+      const record = usage as Record<string, unknown>;
+      const promptTokens = typeof record['prompt_tokens'] === 'number' ? record['prompt_tokens'] : 0;
+      const completionTokens = typeof record['completion_tokens'] === 'number' ? record['completion_tokens'] : 0;
+      if (promptTokens === 0 && completionTokens === 0) continue;
+      reported = true;
+      onUsage({ promptTokens, completionTokens });
+      return;
+    }
+  };
+
+  return new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+      if (reported) return;
+      try {
+        inspect(reader.feed(decoder.decode(chunk, { stream: true })));
+      } catch {
+        // 用量统计是旁路能力,解析失败不能影响响应转发
+      }
+    },
+    flush() {
+      if (reported) return;
+      try {
+        inspect(reader.eof());
+      } catch {
+        // 同上
+      }
+    },
+  });
+}
+
+/**
+ * 从已聚合的上游 SSE 文本中提取 token 用量(非流式路径用)。
+ * 上游把 usage 放在最后一个事件里,这里取最后一个有效值。
+ */
+export function extractUsageFromSseText(body: string): TokenUsage | undefined {
+  let found: TokenUsage | undefined;
+  for (const chunk of parseSseJsonChunks(body)) {
+    const usage = chunk['usage'];
+    if (!usage || typeof usage !== 'object' || Array.isArray(usage)) continue;
+    const record = usage as Record<string, unknown>;
+    const promptTokens = typeof record['prompt_tokens'] === 'number' ? record['prompt_tokens'] : 0;
+    const completionTokens = typeof record['completion_tokens'] === 'number' ? record['completion_tokens'] : 0;
+    if (promptTokens === 0 && completionTokens === 0) continue;
+    found = { promptTokens, completionTokens };
+  }
+  return found;
+}

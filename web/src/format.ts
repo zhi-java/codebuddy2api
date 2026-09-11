@@ -61,6 +61,14 @@ export function num(value?: number): string {
   return value.toLocaleString('en-US');
 }
 
+/** token 数量：`1,234` / `12.3K` / `1.24M`（KPI 与列表共用，保持同一种读法） */
+export function fmtTokens(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  if (value < 10_000) return value.toLocaleString('en-US');
+  if (value < 1_000_000) return `${(value / 1000).toFixed(1)}K`;
+  return `${(value / 1_000_000).toFixed(2)}M`;
+}
+
 /** 从 token 用量对象里取一个数字字段 */
 export function usageNum(usage: Record<string, unknown> | undefined, key: string): number | undefined {
   const value = usage?.[key];

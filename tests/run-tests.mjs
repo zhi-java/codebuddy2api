@@ -20,7 +20,7 @@ const entries = [
   'src/crypto.ts', 'src/store.ts', 'src/credentials.ts', 'src/admin.ts',
   'src/protocol/sse.ts', 'src/protocol/anthropic.ts', 'src/protocol/responses.ts',
   'src/upstream-billing.ts', 'src/admin-ui.ts', 'src/scheduled.ts',
-  'src/metrics.ts', 'src/logs.ts', 'src/static.ts',
+  'src/metrics.ts', 'src/logs.ts', 'src/static.ts', 'src/process-guards.ts',
 ];
 
 await Promise.all(
@@ -95,3 +95,7 @@ await writeFile(`${outDir}/combined.mjs`, combined, 'utf8');
 await import(pathToFileURL(`${process.cwd()}/${outDir}/combined.mjs`));
 
 console.log(`\nAll ${files.length} test case groups passed`);
+
+// 部分用例会启动长期监听的真实服务(如 node e2e 的网关实例)与连接池 socket,
+// 断言跑完后事件循环不会自然排空。断言已全部通过,这里主动退出,避免测试进程挂起。
+process.exit(0);
