@@ -1,0 +1,885 @@
+/**
+ * 管理界面：鉴权 + 管理 API。
+ *
+ * 鉴权采用无状态会话：密码经常时比较校验后，签发 HMAC 签名的 httpOnly cookie，
+ * 不占用 KV 存储。所有写接口额外校验 Origin 同站，防止 CSRF。
+ */
+
+import { generateApiKey, randomId, signSession, timingSafeEqual, verifySession } from './crypto';
+import { forceRefreshCredential, getCredentialStatus } from './credentials';
+import { getTokenStore, hashApiKey } from './store';
+import { renderLoginPage } from './admin-ui';
+import { serveAppShell, serveStaticFile } from './static';
+import { fetchCredentialQuota, fetchDailyCheckin } from './upstream-billing';
+import { createSseReader, parseSseJsonChunks } from './protocol/sse';
+import { prepareChatPayload } from './payload';
+import type { ClientKey, Credential, CredentialKind } from './types';
+import { Env, jsonResponse, fetchWithTimeout, resolveRateLimit } from './utils';
+import { checkRateLimit } from './rate-limiter';
+import { metricsSnapshot } from './metrics';
+import { logSnapshot, pushLog } from './logs';
+
+const SESSION_COOKIE = 'cb_admin';
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_SESSION_SECRET = 'dev-insecure-session-secret';
+/** 上游额度查询默认地址(与转发链路保持一致,仅用于「设置」页展示) */
+const DEFAULT_UPSTREAM_QUOTA_URL = 'https://copilot.tencent.com/v2/billing/meter/get-user-resource';
+
+// ── 会话 ──────────────────────────────────────────────────────────────────
+
+function sessionSecret(env: Env): string {
+  return env.ADMIN_SESSION_SECRET || DEFAULT_SESSION_SECRET;
+}
+
+/** 管理功能是否启用（需配置管理员密码） */
+export function isAdminEnabled(env: Env): boolean {
+  return Boolean(env.ADMIN_PASSWORD);
+}
+
+/**
+ * 解析客户端来源 IP(用于管理限流分桶)。
+ * 优先取 X-Forwarded-For 首个地址;缺失时退化为 UA 前缀 / unknown,
+ * 避免多客户端共享单桶互相 429。
+ */
+function resolveClientIp(request: Request): string {
+  const forwarded = request.headers.get('X-Forwarded-For');
+  if (forwarded) {
+    const first = forwarded.split(',')[0].trim();
+    if (first) return first;
+  }
+
+  // 无来源 IP(本地/特殊回源):用 User-Agent 前缀做弱区分,避免全局共享桶
+  const ua = request.headers.get('user-agent') ?? '';
+  const uaKey = ua.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24);
+  return uaKey || 'unknown';
+}
+
+async function isAuthenticated(request: Request, env: Env): Promise<boolean> {
+  const cookie = request.headers.get('cookie') ?? '';
+  const match = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`).exec(cookie);
+  return verifySession(match?.[1], sessionSecret(env));
+}
+
+/**
+ * 校验写请求的 Origin 是否同站，防 CSRF。
+ * 缺少 Origin（如 curl）时放行，便于脚本化管理。
+ */
+function isSameOrigin(request: Request): boolean {
+  const origin = request.headers.get('origin');
+  if (!origin) return true;
+
+  try {
+    return new URL(origin).host === new URL(request.url).host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 管理接口统一的鉴权守卫。返回 null 表示放行，否则返回错误响应。
+ */
+async function guard(request: Request, env: Env, ip: string): Promise<Response | null> {
+  if (!isAdminEnabled(env)) {
+    return jsonResponse(
+      { error: 'Admin disabled', message: 'ADMIN_PASSWORD is not configured' },
+      env,
+      404,
+    );
+  }
+
+  // 管理接口限流:已鉴权操作放宽额度(登录爆破由 handleLogin 独立防护)
+  if (!checkRateLimit(`admin:${ip}`, 600, 60_000, 120)) {
+    return jsonResponse({ error: 'Too Many Requests' }, env, 429);
+  }
+
+  if (!(await isAuthenticated(request, env))) {
+    return jsonResponse({ error: 'Unauthorized' }, env, 401);
+  }
+
+  if (request.method !== 'GET' && !isSameOrigin(request)) {
+    return jsonResponse({ error: 'Forbidden', message: 'Cross-origin write denied' }, env, 403);
+  }
+
+  return null;
+}
+
+// ── 路由入口 ──────────────────────────────────────────────────────────────
+
+/**
+ * 处理 /admin 与 /admin/* 请求。
+ */
+export async function handleAdmin(request: Request, env: Env, path: string): Promise<Response> {
+  if (!isAdminEnabled(env)) {
+    return new Response('Admin disabled', { status: 404 });
+  }
+
+  const ip = resolveClientIp(request);
+
+  // ── 登录 / 登出 ────────────────────────────────────────────────
+  if (path === '/admin/login' && request.method === 'POST') {
+    return handleLogin(request, env, ip);
+  }
+  if (path === '/admin/logout' && request.method === 'POST') {
+    return withClearedCookie(jsonResponse({ ok: true }, env));
+  }
+
+  // ── 管理 API ──────────────────────────────────────────────────
+  if (path.startsWith('/admin/api/')) {
+    const denied = await guard(request, env, ip);
+    if (denied) return denied;
+    return handleAdminApi(request, env, path);
+  }
+
+  // ── 控制台静态资源(带 hash 的 JS/CSS,不含数据,无需鉴权) ───────
+  if (path !== '/admin' && path !== '/admin/') {
+    const asset = await serveStaticFile(publicDir(env), path, '/admin');
+    if (asset) return asset;
+  }
+
+  // ── 控制台页面:未登录先登录,已登录返回 SPA 入口 ────────────────
+  if (!(await isAuthenticated(request, env))) {
+    return htmlResponse(renderLoginPage());
+  }
+  const shell = await serveAppShell(publicDir(env));
+  if (shell) return shell;
+  return htmlResponse(renderConsoleNotBuilt());
+}
+
+/**
+ * 控制台前端产物目录。
+ * Docker 镜像固定为 /app/public;源码运行默认取仓库内 web/dist。
+ */
+function publicDir(env: Env): string {
+  if (env.PUBLIC_DIR) return env.PUBLIC_DIR;
+  const cwd = typeof process !== 'undefined' && process.cwd ? process.cwd() : '.';
+  return `${cwd}/web/dist`;
+}
+
+/** 产物缺失(未执行前端构建)时的可操作提示 */
+function renderConsoleNotBuilt(): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>控制台未构建</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#070b14;color:#f1f5f9;
+font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+.box{max-width:520px;padding:28px 30px;border:1px solid #1e293b;border-radius:14px;background:#0d1320}
+h1{margin:0 0 10px;font-size:18px}code{background:#101624;padding:2px 6px;border-radius:6px;font-size:13px}
+p{color:#94a3b8;margin:8px 0}</style></head>
+<body><div class="box">
+<h1>控制台前端尚未构建</h1>
+<p>管理 API 已就绪，但缺少前端产物。请在仓库中执行：</p>
+<p><code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+<p>或使用 Docker 镜像（镜像内已包含构建产物）。</p>
+</div></body></html>`;
+}
+
+async function handleLogin(request: Request, env: Env, ip: string): Promise<Response> {
+  if (!checkRateLimit(`admin-login:${ip}`, 10, 60_000, 5)) {
+    return jsonResponse({ error: 'Too Many Requests' }, env, 429);
+  }
+
+  let body: { password?: unknown } = {};
+  try {
+    body = (await request.json()) as { password?: unknown };
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' }, env, 400);
+  }
+
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!env.ADMIN_PASSWORD || !timingSafeEqual(password, env.ADMIN_PASSWORD)) {
+    return jsonResponse({ error: 'Unauthorized', message: 'Invalid password' }, env, 401);
+  }
+
+  const token = await signSession(Date.now() + SESSION_TTL_MS, sessionSecret(env));
+  const response = jsonResponse({ ok: true }, env);
+  response.headers.append(
+    'set-cookie',
+    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+  );
+  return response;
+}
+
+function withClearedCookie(response: Response): Response {
+  response.headers.append(
+    'set-cookie',
+    `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+  );
+  return response;
+}
+
+// ── 管理 API 分发 ─────────────────────────────────────────────────────────
+
+async function handleAdminApi(request: Request, env: Env, path: string): Promise<Response> {
+  const store = getTokenStore(env);
+
+  // ── 运行配置(只读,供「设置」页展示;不含任何密钥) ────────────
+  if (path === '/admin/api/config' && request.method === 'GET') {
+    const limit = resolveRateLimit(env);
+    return jsonResponse(
+      {
+        data: {
+          storage: store.persistent ? 'persistent' : 'memory',
+          thinkingMode: (env.EMIT_THINKING || 'auto').toLowerCase(),
+          rateLimit: { perMinute: limit.perMinute, burst: limit.burst },
+          sessionTtlHours: Math.round(SESSION_TTL_MS / 3600_000),
+          checkinSchedule: 'UTC 03:17',
+          upstream: {
+            chat: env.UPSTREAM_CHAT_COMPLETIONS_URL,
+            quota: env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL,
+            config: env.UPSTREAM_CONFIG_URL || 'https://copilot.tencent.com/v3/config',
+            refresh: env.UPSTREAM_REFRESH_URL || 'https://copilot.tencent.com/v2/plugin/auth/token/refresh',
+          },
+          timeout: {
+            totalSeconds: Number(env.UPSTREAM_TIMEOUT_SECONDS) || 600,
+            connectSeconds: Number(env.UPSTREAM_CONNECT_TIMEOUT_SECONDS) || 30,
+          },
+        },
+      },
+      env,
+    );
+  }
+
+  // ── 实时请求监控统计 ──────────────────────────────────────
+  if (path === '/admin/api/metrics' && request.method === 'GET') {
+    return jsonResponse({ data: metricsSnapshot() }, env);
+  }
+
+  // ── 运行日志(内存缓冲,新的在前;支持级别与关键词过滤) ──────
+  if (path === '/admin/api/logs' && request.method === 'GET') {
+    const url = new URL(request.url);
+    const limit = Number(url.searchParams.get('limit') ?? '200');
+    const level = url.searchParams.get('level') ?? '';
+    const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+
+    let entries = logSnapshot(Number.isFinite(limit) ? limit : 200);
+    if (level === 'info' || level === 'warn' || level === 'error') {
+      entries = entries.filter((entry) => entry.level === level);
+    }
+    if (query) {
+      entries = entries.filter((entry) =>
+        `${entry.event} ${entry.message} ${JSON.stringify(entry.data ?? {})}`.toLowerCase().includes(query),
+      );
+    }
+    return jsonResponse({ data: entries }, env);
+  }
+
+  // ── 网关设置(签到策略)─────────────────────────────────────
+  if (path === '/admin/api/settings' && request.method === 'GET') {
+    return jsonResponse({ data: await store.getSettings() }, env);
+  }
+
+  if (path === '/admin/api/settings' && request.method === 'PUT') {
+    const body = await readJson(request);
+    const next: import('./types').GatewaySettings = {
+      autoCheckin: body.autoCheckin === true,
+    };
+    await store.putSettings(next);
+    return jsonResponse({ data: next }, env);
+  }
+
+  // ── 仪表盘聚合数据 ──────────────────────────────────────────
+  if (path === '/admin/api/state' && request.method === 'GET') {
+    const credentials = await store.listCredentials();
+    const keys = await store.listKeys();
+
+    return jsonResponse(
+      {
+        storage: store.persistent ? 'persistent' : 'memory',
+        credentials: credentials.map(summarizeCredential),
+        keys: keys.map(summarizeKey),
+        counts: {
+          credentials: credentials.length,
+          healthy: credentials.filter((c) => getCredentialStatus(c) === 'healthy').length,
+          keys: keys.length,
+          enabledKeys: keys.filter((k) => k.enabled).length,
+        },
+      },
+      env,
+    );
+  }
+
+  // ── 凭证 ────────────────────────────────────────────────────
+  if (path === '/admin/api/credentials' && request.method === 'GET') {
+    const credentials = await store.listCredentials();
+    return jsonResponse({ data: credentials.map(summarizeCredential) }, env);
+  }
+
+  if (path === '/admin/api/credentials' && request.method === 'POST') {
+    const body = await readJson(request);
+    const kind = body.kind === 'ck_apikey' ? 'ck_apikey' : 'cli_oauth';
+    const now = Date.now();
+
+    const credential: Credential = {
+      id: randomId('cred'),
+      name: String(body.name ?? '未命名凭证'),
+      kind: kind as CredentialKind,
+      enabled: body.enabled !== false,
+      createdAt: now,
+      updatedAt: now,
+      ...(kind === 'ck_apikey'
+        ? { apiKey: String(body.apiKey ?? '') }
+        : {
+            accessToken: body.accessToken ? String(body.accessToken) : undefined,
+            refreshToken: body.refreshToken ? String(body.refreshToken) : undefined,
+            expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : undefined,
+            refreshExpiresAt:
+              typeof body.refreshExpiresAt === 'number' ? body.refreshExpiresAt : undefined,
+            userId: body.userId ? String(body.userId) : undefined,
+            domain: body.domain ? String(body.domain) : undefined,
+          }),
+    };
+
+    credential.userId ??= deriveUserId(credential);
+    await store.saveCredential(credential);
+    return jsonResponse({ data: summarizeCredential(credential) }, env, 201);
+  }
+
+  const credMatch = /^\/admin\/api\/credentials\/([^/]+)(\/refresh|\/quota|\/checkin)?$/.exec(path);
+  if (credMatch) {
+    const id = decodeURIComponent(credMatch[1]);
+    const action = credMatch[2] ?? '';
+    const isRefresh = action === '/refresh';
+
+    if (isRefresh && request.method === 'POST') {
+      try {
+        const refreshed = await forceRefreshCredential(id, env);
+        return jsonResponse({ data: summarizeCredential(refreshed) }, env);
+      } catch (err: unknown) {
+        return jsonResponse(
+          { error: 'Refresh failed', message: err instanceof Error ? err.message : String(err) },
+          env,
+          502,
+        );
+      }
+    }
+
+    // ── 额度查询(只读)──────────────────────────────────────
+    if (action === '/quota' && request.method === 'GET') {
+      const credential = await store.getCredential(id);
+      if (!credential) return jsonResponse({ error: 'Not Found' }, env, 404);
+
+      try {
+        const quota = await fetchCredentialQuota(credential, env);
+        return jsonResponse({ data: quota }, env);
+      } catch (err: unknown) {
+        return jsonResponse(
+          { error: 'Quota query failed', message: err instanceof Error ? err.message : String(err) },
+          env,
+          502,
+        );
+      }
+    }
+
+    // ── 每日签到(改变上游账号资源状态,需显式触发)──────────
+    if (action === '/checkin' && request.method === 'POST') {
+      const credential = await store.getCredential(id);
+      if (!credential) return jsonResponse({ error: 'Not Found' }, env, 404);
+
+      try {
+        const result = await fetchDailyCheckin(credential, env);
+        return jsonResponse({ data: result }, env);
+      } catch (err: unknown) {
+        return jsonResponse(
+          { error: 'Check-in failed', message: err instanceof Error ? err.message : String(err) },
+          env,
+          502,
+        );
+      }
+    }
+
+    if (request.method === 'PUT') {
+      const existing = await store.getCredential(id);
+      if (!existing) return jsonResponse({ error: 'Not Found' }, env, 404);
+
+      const body = await readJson(request);
+      const updated: Credential = {
+        ...existing,
+        name: typeof body.name === 'string' ? body.name : existing.name,
+        enabled: typeof body.enabled === 'boolean' ? body.enabled : existing.enabled,
+        updatedAt: Date.now(),
+      };
+      await store.saveCredential(updated);
+      return jsonResponse({ data: summarizeCredential(updated) }, env);
+    }
+
+    if (request.method === 'DELETE') {
+      await store.deleteCredential(id);
+      return jsonResponse({ ok: true }, env);
+    }
+  }
+
+  // ── 客户端 key ──────────────────────────────────────────────
+  if (path === '/admin/api/keys' && request.method === 'GET') {
+    const keys = await store.listKeys();
+    return jsonResponse({ data: keys.map(summarizeKey) }, env);
+  }
+
+  if (path === '/admin/api/keys' && request.method === 'POST') {
+    const body = await readJson(request);
+    const plaintext = generateApiKey(env.GATEWAY_KEY_PREFIX || 'sk-cb');
+
+    const key: ClientKey = {
+      id: randomId('key'),
+      name: String(body.name ?? '未命名 Key'),
+      keyHash: await hashApiKey(plaintext),
+      credentialIds: Array.isArray(body.credentialIds)
+        ? body.credentialIds.filter((v): v is string => typeof v === 'string')
+        : [],
+      enabled: true,
+      createdAt: Date.now(),
+    };
+
+    await store.saveKey(key);
+    // 明文仅在此处返回一次，库中只存哈希
+    return jsonResponse({ data: { ...summarizeKey(key), plaintext } }, env, 201);
+  }
+
+  const keyMatch = /^\/admin\/api\/keys\/([^/]+)(\/bind)?$/.exec(path);
+  if (keyMatch) {
+    const id = decodeURIComponent(keyMatch[1]);
+    const isBind = keyMatch[2] === '/bind';
+
+    if (isBind && request.method === 'POST') {
+      const keys = await store.listKeys();
+      const existing = keys.find((k) => k.id === id);
+      if (!existing) return jsonResponse({ error: 'Not Found' }, env, 404);
+
+      const body = await readJson(request);
+      const credentialIds = Array.isArray(body.credentialIds)
+        ? body.credentialIds.filter((v): v is string => typeof v === 'string')
+        : [];
+
+      await store.saveKey({ ...existing, credentialIds });
+      return jsonResponse({ data: summarizeKey({ ...existing, credentialIds }) }, env);
+    }
+
+    if (request.method === 'PUT') {
+      const keys = await store.listKeys();
+      const existing = keys.find((k) => k.id === id);
+      if (!existing) return jsonResponse({ error: 'Not Found' }, env, 404);
+
+      const body = await readJson(request);
+      const updated: ClientKey = {
+        ...existing,
+        name: typeof body.name === 'string' ? body.name : existing.name,
+        enabled: typeof body.enabled === 'boolean' ? body.enabled : existing.enabled,
+        modelAliases: isAliasMap(body.modelAliases)
+          ? (body.modelAliases as Record<string, string>)
+          : existing.modelAliases,
+      };
+      await store.saveKey(updated);
+      return jsonResponse({ data: summarizeKey(updated) }, env);
+    }
+
+    if (request.method === 'DELETE') {
+      await store.deleteKey(id);
+      return jsonResponse({ ok: true }, env);
+    }
+  }
+
+  // ── 连通性自测 ──────────────────────────────────────────────
+  if (path === '/admin/api/test' && request.method === 'POST') {
+    return handleTest(request, env);
+  }
+
+  // ── Chat 试跑:真实对话验证(聚合返回文本) ─────────────────────────
+  if (path === '/admin/api/chat-test' && request.method === 'POST') {
+    return handleChatTest(request, env);
+  }
+
+  // 管理台「试跑」的流式版本:逐字下发思考与正文,支持中途取消
+  if (path === '/admin/api/chat-test/stream' && request.method === 'POST') {
+    return handleChatTestStream(request, env);
+  }
+
+  return jsonResponse({ error: 'Not Found' }, env, 404);
+}
+
+/**
+ * 用指定凭证向上游发一次最小 chat 请求，验证可用性。
+ */
+async function handleTest(request: Request, env: Env): Promise<Response> {
+  const body = await readJson(request);
+  const credentialId = typeof body.credentialId === 'string' ? body.credentialId : '';
+  const credential = credentialId ? await getTokenStore(env).getCredential(credentialId) : undefined;
+
+  if (!credential) {
+    return jsonResponse({ error: 'Credential not found' }, env, 404);
+  }
+
+  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
+  if (!token) {
+    return jsonResponse({ error: 'Credential has no usable token' }, env, 400);
+  }
+
+  const url = env.UPSTREAM_CHAT_COMPLETIONS_URL;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+        ...(credential.userId ? { 'x-user-id': credential.userId } : {}),
+      },
+      body: JSON.stringify({
+        model: typeof body.model === 'string' ? body.model : 'hy3',
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+      signal: controller.signal,
+    });
+
+    return jsonResponse(
+      { ok: response.ok, status: response.status, credential: credential.name },
+      env,
+    );
+  } catch (err: unknown) {
+    return jsonResponse(
+      {
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+        credential: credential.name,
+      },
+      env,
+      502,
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Chat 试跑:用所选凭证真实对话一次(上游仅支持流式,内部聚合),
+ * 返回完整文本/推理/用量,供管理台「试跑」视图展示。
+ */
+/**
+ * 管理台「试跑」的流式版本。
+ *
+ * 与聚合版共用参数,但把上游 SSE 逐事件转成管理台易消费的简化事件:
+ *   {"type":"reasoning","delta":"…"}  思考增量
+ *   {"type":"content","delta":"…"}    正文增量
+ *   {"type":"usage","usage":{…}}      token 用量
+ *   {"type":"done","model":"…","finishReason":"…"}
+ *   {"type":"error","message":"…"}
+ * 客户端断开(取消)时同步中断上游请求,避免上游继续计费。
+ */
+async function handleChatTestStream(request: Request, env: Env): Promise<Response> {
+  const body = await readJson(request);
+  const credentialId = typeof body.credentialId === 'string' ? body.credentialId : '';
+  const credential = credentialId ? await getTokenStore(env).getCredential(credentialId) : undefined;
+  if (!credential) return jsonResponse({ error: 'Credential not found' }, env, 404);
+
+  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
+  if (!token) return jsonResponse({ error: 'Credential has no usable token' }, env, 400);
+
+  const model = typeof body.model === 'string' && body.model ? body.model : 'hy4-preview';
+  const userMessage = typeof body.message === 'string' ? body.message : '';
+  if (!userMessage) return jsonResponse({ error: 'message is required' }, env, 400);
+
+  const messages: Record<string, unknown>[] = [];
+  const system = typeof body.system === 'string' ? body.system.trim() : '';
+  if (system) messages.push({ role: 'system', content: system });
+  messages.push({ role: 'user', content: userMessage });
+
+  const temperature = typeof body.temperature === 'number' ? body.temperature : 1;
+  const maxTokens = typeof body.maxTokens === 'number' && body.maxTokens > 0
+    ? Math.min(Math.floor(body.maxTokens), 32_768)
+    : 4000;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120_000);
+
+  // 与代理链路共用载荷处理:字段白名单 + max_tokens 钳制 + 思考档位映射。
+  // 否则「试跑」会绕过 thinking 映射,导致 deepseek-v4-* 看不到思考输出。
+  const payload = await prepareChatPayload(
+    { model, stream: true, max_tokens: maxTokens, temperature, messages },
+    env,
+    { token, userId: credential.userId, kind: credential.kind, credentialId: credential.id },
+  );
+
+  let upstream: Response;
+  try {
+    upstream = await fetchWithTimeout(env, env.UPSTREAM_CHAT_COMPLETIONS_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        authorization: `Bearer ${token}`,
+        ...(credential.userId ? { 'x-user-id': credential.userId } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    return jsonResponse(
+      { error: 'Chat test failed', message: err instanceof Error ? err.message : String(err) },
+      env,
+      502,
+    );
+  }
+
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 500);
+    clearTimeout(timeoutId);
+    return jsonResponse({ error: 'Upstream error', status: upstream.status, detail }, env, 502);
+  }
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(streamController) {
+      const send = (payload: Record<string, unknown>) => {
+        streamController.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      };
+      try {
+        const reader = createSseReader();
+        const decoder = new TextDecoder();
+        let responseModel = model;
+        let finishReason: string | undefined;
+        let usage: Record<string, unknown> | undefined;
+
+        const upstreamReader = upstream.body?.getReader();
+        if (upstreamReader) {
+          for (;;) {
+            const { done, value } = await upstreamReader.read();
+            if (done) break;
+            for (const chunk of reader.feed(decoder.decode(value, { stream: true }))) {
+              if (typeof chunk.model === 'string') responseModel = chunk.model;
+              if (chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage as Record<string, unknown>;
+              const choices = chunk.choices;
+              if (!Array.isArray(choices)) continue;
+              for (const choice of choices) {
+                if (!choice || typeof choice !== 'object') continue;
+                const record = choice as Record<string, unknown>;
+                if (typeof record.finish_reason === 'string') finishReason = record.finish_reason;
+                const delta = record.delta as Record<string, unknown> | undefined;
+                if (!delta) continue;
+                if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+                  send({ type: 'reasoning', delta: delta.reasoning_content });
+                }
+                if (typeof delta.content === 'string' && delta.content) {
+                  send({ type: 'content', delta: delta.content });
+                }
+              }
+            }
+          }
+          for (const chunk of reader.eof()) {
+            if (chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage as Record<string, unknown>;
+          }
+        }
+        if (usage) send({ type: 'usage', usage });
+        send({ type: 'done', model: responseModel, finishReason: finishReason ?? 'stop' });
+      } catch (err: unknown) {
+        send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+      } finally {
+        clearTimeout(timeoutId);
+        streamController.close();
+      }
+    },
+    cancel() {
+      // 客户端取消:中断上游请求,避免上游继续消耗额度
+      controller.abort();
+      clearTimeout(timeoutId);
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+async function handleChatTest(request: Request, env: Env): Promise<Response> {  const body = await readJson(request);
+  const credentialId = typeof body.credentialId === 'string' ? body.credentialId : '';
+  const credential = credentialId
+    ? await getTokenStore(env).getCredential(credentialId)
+    : undefined;
+
+  if (!credential) {
+    return jsonResponse({ error: 'Credential not found' }, env, 404);
+  }
+
+  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
+  if (!token) {
+    return jsonResponse({ error: 'Credential has no usable token' }, env, 400);
+  }
+
+  const model = typeof body.model === 'string' && body.model ? body.model : 'hy3';
+  const messages: Record<string, unknown>[] = [];
+  const system = typeof body.system === 'string' && body.system.trim()
+    ? body.system.trim()
+    : '';
+  const userMessage = typeof body.message === 'string' ? body.message : '';
+
+  if (!userMessage) {
+    return jsonResponse({ error: 'message is required' }, env, 400);
+  }
+  if (system) messages.push({ role: 'system', content: system });
+  messages.push({ role: 'user', content: userMessage });
+
+  const url = env.UPSTREAM_CHAT_COMPLETIONS_URL;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 90_000);
+
+  try {
+    const response = await fetchWithTimeout(env, url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+        ...(credential.userId ? { 'x-user-id': credential.userId } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        max_tokens: 4000,
+        temperature: 1,
+        messages,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const raw = await response.text();
+      return jsonResponse(
+        { error: 'Upstream error', status: response.status, detail: raw.slice(0, 500) },
+        env,
+        502,
+      );
+    }
+
+    const chunks = parseSseJsonChunks(await response.text());
+    let content = '';
+    let reasoning = '';
+    let usage: Record<string, unknown> | undefined;
+    let responseModel: string | undefined;
+    let finishReason: string | undefined;
+
+    for (const chunk of chunks) {
+      if (typeof chunk.model === 'string') responseModel = chunk.model;
+      if (chunk.usage && typeof chunk.usage === 'object') {
+        usage = chunk.usage as Record<string, unknown>;
+      }
+      const choices = chunk.choices;
+      if (!Array.isArray(choices)) continue;
+      for (const choice of choices) {
+        if (!choice || typeof choice !== 'object') continue;
+        const c = choice as Record<string, unknown>;
+        const delta = c.delta as Record<string, unknown> | undefined;
+        if (!delta) continue;
+        if (typeof delta.content === 'string') content += delta.content;
+        if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content;
+        if (typeof c.finish_reason === 'string') finishReason = c.finish_reason;
+      }
+    }
+
+    return jsonResponse(
+      {
+        credential: credential.name,
+        model: responseModel ?? model,
+        content,
+        reasoning,
+        finishReason,
+        usage,
+      },
+      env,
+    );
+  } catch (err: unknown) {
+    return jsonResponse(
+      { error: 'Chat test failed', message: err instanceof Error ? err.message : String(err) },
+      env,
+      502,
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function readJson(request: Request): Promise<Record<string, unknown>> {
+  try {
+    const parsed = (await request.json()) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function deriveUserId(credential: Credential): string | undefined {
+  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
+  if (!token || token.split('.').length !== 3) return undefined;
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(payload + '='.repeat((4 - (payload.length % 4)) % 4))) as {
+      sub?: unknown;
+    };
+    return typeof claims.sub === 'string' ? claims.sub : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 凭证摘要：剔除敏感字段，避免管理接口回显 token。
+ */
+function summarizeCredential(credential: Credential) {
+  return {
+    id: credential.id,
+    name: credential.name,
+    kind: credential.kind,
+    status: getCredentialStatus(credential),
+    enabled: credential.enabled,
+    userId: credential.userId,
+    domain: credential.domain,
+    expiresAt: credential.expiresAt,
+    refreshExpiresAt: credential.refreshExpiresAt,
+    lastError: credential.lastError,
+    updatedAt: credential.updatedAt,
+    hasApiKey: Boolean(credential.apiKey),
+    hasAccessToken: Boolean(credential.accessToken),
+    hasRefreshToken: Boolean(credential.refreshToken),
+  };
+}
+
+function summarizeKey(key: ClientKey) {
+  return {
+    id: key.id,
+    name: key.name,
+    enabled: key.enabled,
+    credentialIds: key.credentialIds,
+    createdAt: key.createdAt,
+    lastUsedAt: key.lastUsedAt,
+    modelAliases: key.modelAliases,
+  };
+}
+
+/** 校验 modelAliases 结构(字符串→字符串映射) */
+function isAliasMap(value: unknown): value is Record<string, string> {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.values(value as Record<string, unknown>).every((v) => typeof v === 'string'),
+  );
+}
+
+function htmlResponse(body: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-frame-options': 'DENY',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    },
+  });
+}

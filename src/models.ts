@@ -3,7 +3,9 @@
  * Served at GET /v1/models in OpenAI-compatible format.
  */
 
+import { extractUserIdFromJwt } from './crypto';
 import { normalizeModelId } from './utils';
+import type { UpstreamCredential } from './types';
 
 // ── Raw model entries from the API ────────────────────────────────────────
 
@@ -731,6 +733,15 @@ export interface OpenAIModel {
   _supportsToolCall?: boolean;
   _maxInputTokens?: number;
   _maxOutputTokens?: number;
+  /** 常见兼容字段:部分客户端据此做上下文预检(缺失时可能误判) */
+  context_window?: number;
+  max_model_len?: number;
+  /** 输出上限;与 context_window 分开,避免客户端把输入窗口误填进 max_tokens */
+  max_output_tokens?: number;
+  /** 思考档位:上游要求显式传 reasoning_effort 的模型据此补默认值 */
+  _defaultEffort?: string;
+  _supportedEfforts?: string[];
+  _canDisableThinking?: boolean;
   _descriptionZh?: string;
   _descriptionEn?: string;
 }
@@ -743,10 +754,10 @@ const VENDOR_NAMES: Record<string, string> = {
 };
 
 /**
- * Build the OpenAI-compatible model list once.
+ * Build the OpenAI-compatible model list from a raw model array.
  */
-function buildModelList(): OpenAIModel[] {
-  return MODELS_DATA.data.models.map((m) => ({
+function buildModelList(entries: ModelEntry[]): OpenAIModel[] {
+  return entries.map((m) => ({
     id: m.id,
     object: 'model' as const,
     created: EPOCH,
@@ -759,12 +770,40 @@ function buildModelList(): OpenAIModel[] {
     _supportsToolCall: m.supportsToolCall,
     _maxInputTokens: m.maxInputTokens,
     _maxOutputTokens: m.maxOutputTokens,
+    ...(typeof m.maxInputTokens === 'number'
+      ? { context_window: m.maxInputTokens, max_model_len: m.maxInputTokens }
+      : {}),
+    ...(typeof m.maxOutputTokens === 'number' ? { max_output_tokens: m.maxOutputTokens } : {}),
+    _defaultEffort: m.reasoning?.defaultEffort ?? m.reasoning?.effort,
+    _supportedEfforts: m.reasoning?.supportedEfforts,
+    _canDisableThinking: m.reasoning?.canDisableThinking,
     _descriptionZh: m.descriptionZh,
     _descriptionEn: m.descriptionEn,
   }));
 }
 
-const MODEL_LIST = buildModelList();
+/** Static fallback list, built from the embedded snapshot. */
+const MODEL_LIST = buildModelList(MODELS_DATA.data.models);
+
+/**
+ * 最近一次成功拉取的上游实时目录。
+ *
+ * 上游会新增内置快照没有的模型(如 deepseek-v4.1-flash),这些模型的
+ * 思考档位、输出上限等元数据只能从实时目录获得,因此缓存最近一次结果供
+ * 请求链路查询。
+ */
+let liveCatalog: OpenAIModel[] | undefined;
+
+function rememberUpstreamModels(models: OpenAIModel[]): void {
+  liveCatalog = models;
+}
+
+/** 查询模型元数据:优先内置快照(稳定),其次最近一次上游实时目录。 */
+export function findModelMetadata(id: string): OpenAIModel | undefined {
+  const normalized = normalizeModelId(id);
+  return MODEL_LIST.find((m) => m.id === normalized)
+    ?? liveCatalog?.find((m) => m.id === normalized);
+}
 
 // ── Public exports ───────────────────────────────────────────────────────
 
@@ -785,17 +824,111 @@ export function getModelById(id: string): OpenAIModel | undefined {
   return MODEL_LIST.find((m) => m.id === normalizedId);
 }
 
-/** Raw upstream-style response (proxy pass-through for GET /models) */
-export function getRawModelsData(): ModelsResponse {
-  return MODELS_DATA;
+
+
+
+// ── Dynamic model discovery (client credential pass-through) ──────────────
+
+/**
+ * 上游配置接口地址。客户端凭证透传后由网关补齐必要的身份头。
+ */
+const DEFAULT_UPSTREAM_CONFIG_URL = 'https://copilot.tencent.com/v3/config';
+
+/**
+ * 上游要求客户端带上 IDE/CLI 身份头,否则返回 400（check ua）。
+ * 这些是可公开的固定指纹头,不含任何用户凭据。
+ */
+const CONFIG_FINGERPRINT_HEADERS: Record<string, string> = {
+  'user-agent': 'CLI/2.107.0 CodeBuddy/2.107.0',
+  'x-ide-type': 'CLI',
+  'x-ide-name': 'CLI',
+  'x-ide-version': '2.107.0',
+  'accept': 'application/json',
+};
+
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 分钟
+const CACHE_MAX_ENTRIES = 50;
+const MODEL_FETCH_TIMEOUT_MS = 10_000;
+
+interface CacheEntry {
+  expiresAt: number;
+  models: OpenAIModel[];
 }
 
-/** Agent list */
-export function getAgents() {
-  return MODELS_DATA.data.agents;
+/** 按客户端凭证指纹缓存,多租户互不影响 */
+const modelCache = new Map<string, CacheEntry>();
+
+function cacheKeyFor(token: string, userId: string): string {
+  // 只取 token 首尾片段做指纹,避免明文缓存完整凭据
+  return `${token.length}:${token.slice(0, 8)}:${token.slice(-8)}:${userId}`;
 }
 
-/** Product features */
-export function getProductFeatures() {
-  return MODELS_DATA.data.productFeatures;
+function pruneCache(now: number): void {
+  for (const [key, entry] of modelCache) {
+    if (entry.expiresAt <= now) modelCache.delete(key);
+  }
+  // 超限时淘汰最早的条目(Map 保持插入顺序)
+  while (modelCache.size > CACHE_MAX_ENTRIES) {
+    const oldest = modelCache.keys().next();
+    if (oldest.done) break;
+    modelCache.delete(oldest.value);
+  }
 }
+
+/**
+ * 从上游拉取最新模型目录。
+ *
+ * - 使用解析后的上游凭证（网关 key → 托管凭证并自动刷新；透传模式为客户端原凭证）
+ * - 自动补齐上游要求的固定身份头
+ * - 成功返回 OpenAI 格式模型列表,失败返回 undefined（调用方应回退静态快照）
+ */
+export async function fetchUpstreamModels(
+  credential: UpstreamCredential,
+  env?: { UPSTREAM_CONFIG_URL?: string },
+  options?: { forceRefresh?: boolean },
+): Promise<OpenAIModel[] | undefined> {
+  const token = credential.token;
+  if (!token) return undefined;
+
+  const userId = credential.userId ?? extractUserIdFromJwt(token);
+  const cacheKey = cacheKeyFor(token, userId ?? 'anonymous');
+
+  const now = Date.now();
+  const cached = modelCache.get(cacheKey);
+  if (!options?.forceRefresh && cached && cached.expiresAt > now) {
+    return cached.models;
+  }
+  pruneCache(now);
+
+  const headers = new Headers(CONFIG_FINGERPRINT_HEADERS);
+  headers.set('authorization', `Bearer ${token}`);
+  // 上游用 X-User-Id 标识请求主体;模型目录本身与身份无关,取不到时回退随机值
+  headers.set('x-user-id', userId ?? crypto.randomUUID());
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), MODEL_FETCH_TIMEOUT_MS);
+
+  try {
+    const upstreamUrl = env?.UPSTREAM_CONFIG_URL || DEFAULT_UPSTREAM_CONFIG_URL;
+    const response = await fetch(upstreamUrl, { headers, signal: controller.signal });
+    if (!response.ok) return undefined;
+
+    const body = (await response.json()) as Partial<ModelsResponse>;
+    const models = body?.data?.models;
+    if (!Array.isArray(models) || models.length === 0) return undefined;
+
+    const list = buildModelList(models as ModelEntry[]);
+    rememberUpstreamModels(list);
+    modelCache.set(cacheKey, {
+      expiresAt: Date.now() + CACHE_TTL_MS,
+      models: list,
+    });
+    return list;
+  } catch {
+    // 网络错误 / 超时 / JSON 解析失败 —— 一律交给静态快照兜底
+    return undefined;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+

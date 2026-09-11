@@ -1,4 +1,8 @@
 node_modules/
 dist/
-.dev.vars
+.env
 *.log
+.tmp-test/
+data/
+web/node_modules/
+web/dist/

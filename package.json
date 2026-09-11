@@ -1,17 +1,20 @@
 {
-  "name": "codebuddy-proxy",
+  "name": "codebuddy-gateway",
   "version": "1.0.0",
-  "description": "Cloudflare Worker proxy for CodeBuddy chat completions",
-  "main": "src/index.ts",
+  "description": "Node.js proxy gateway for CodeBuddy chat completions",
+  "main": "src/server.ts",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "npm run build && npm run start",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs",
+    "build:web": "npm --prefix web ci && npm --prefix web run build",
+    "build:all": "npm run build:web && npm run build",
+    "start": "node dist/server.cjs",
     "test": "node tests/run-tests.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && npm --prefix web run typecheck"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250501.0",
-    "typescript": "^5.7.0",
-    "wrangler": "^4.0.0"
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.0"
   }
 }

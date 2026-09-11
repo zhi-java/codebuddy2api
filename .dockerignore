@@ -1,0 +1,8 @@
+# 构建上下文忽略:只保留源码与构建清单
+**/node_modules
+**/dist
+tests
+.tmp-test
+.git
+data
+web/dist

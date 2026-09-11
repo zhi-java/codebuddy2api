@@ -1,0 +1,42 @@
+services:
+  codebuddy-gateway:
+    build: .
+    container_name: codebuddy-gateway
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    env_file:
+      # 密钥与可选配置放在 .env(不入库);首次部署从 .env.example 复制
+      - .env
+    environment:
+      # 缺少必填项时 compose 直接报错,避免以空密码启动
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?请在 .env 中设置 ADMIN_PASSWORD}"
+      ADMIN_SESSION_SECRET: "${ADMIN_SESSION_SECRET:?请在 .env 中设置 ADMIN_SESSION_SECRET}"
+      CREDENTIALS_ENC_SECRET: "${CREDENTIALS_ENC_SECRET:?请在 .env 中设置 CREDENTIALS_ENC_SECRET}"
+      # ── 入口限流(按来源 IP,默认 600/分钟、突发 60) ──
+      # 编码智能体的工具调用循环容易超过默认值;多客户端共用出口 IP 时也需放宽。
+      # RATE_LIMIT_PER_MINUTE: "600"
+      # RATE_LIMIT_BURST: "60"
+      # ── 上游地址覆盖(默认值即官方上游) ──
+      # UPSTREAM_CHAT_COMPLETIONS_URL: "https://copilot.tencent.com/v2/chat/completions"
+      # EMIT_THINKING: "auto"        # auto|thinking|text|off
+      # DEBUG: "false"
+    volumes:
+      - gateway-data:/data
+    # 容器级自愈:健康检查失败时 Docker 会自动重建容器(配合 restart: unless-stopped)
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # 优雅停机宽限期需大于进程内的 drain 窗口(25s),避免流式响应被硬杀截断
+    stop_grace_period: 30s
+
+volumes:
+  gateway-data:
+    name: codebuddy-gateway-data

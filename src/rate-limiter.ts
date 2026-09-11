@@ -1,7 +1,6 @@
 /**
- * 简易令牌桶速率限制器（内存实现）
- * 注意：Cloudflare Workers 是无状态的，此限制在同一 Worker 实例内生效。
- * 生产环境建议使用 Durable Objects 或 KV 实现全局限流。
+ * 简易令牌桶速率限制器（进程内内存实现）。
+ * 单实例 Node 部署下按来源 IP 分桶;多实例部署时各进程独立计数。
  */
 
 interface TokenBucket {
@@ -11,20 +10,15 @@ interface TokenBucket {
 
 const BUCKETS = new Map<string, TokenBucket>();
 
-/** 默认配置：每分钟 60 次请求，最大突发 10 次 */
-const DEFAULT_RATE = 60;
-const DEFAULT_WINDOW_MS = 60_000;
-const DEFAULT_BURST = 10;
-
 /**
  * 检查是否允许请求。
  * @returns true 表示允许，false 表示被限流
  */
 export function checkRateLimit(
   key: string,
-  rate: number = DEFAULT_RATE,
-  windowMs: number = DEFAULT_WINDOW_MS,
-  burst: number = DEFAULT_BURST,
+  rate: number,
+  windowMs: number,
+  burst: number,
 ): boolean {
   const now = Date.now();
   let bucket = BUCKETS.get(key);
@@ -50,12 +44,9 @@ export function checkRateLimit(
 
 /**
  * 从 Request 中提取限流 key。
- * 优先级：X-Forwarded-For 首个 IP > CF-Connecting-IP > 匿名 key
+ * 优先级：X-Forwarded-For 首个 IP > 匿名 key
  */
 export function getRateLimitKey(request: Request): string {
-  const cfIp = request.headers.get('CF-Connecting-IP');
-  if (cfIp) return `ip:${cfIp}`;
-
   const forwarded = request.headers.get('X-Forwarded-For');
   if (forwarded) {
     const firstIp = forwarded.split(',')[0].trim();
