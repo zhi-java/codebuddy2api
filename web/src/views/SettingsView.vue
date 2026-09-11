@@ -19,6 +19,15 @@ const copyTarget = ref('');
 
 const config = computed(() => store.config);
 
+/** 补签间隔文案，如「10 分钟、30 分钟、1 小时、2 小时」 */
+const catchupText = computed(() => {
+  const list = config.value?.checkinCatchupMinutes;
+  if (!list || list.length === 0) return '递增间隔';
+  return list
+    .map((m) => (m < 60 ? `${m} 分钟` : `${m / 60} 小时`))
+    .join('、');
+});
+
 const thinkingLabel = computed(() => {
   const mode = config.value?.thinkingMode ?? 'auto';
   return (
@@ -178,7 +187,10 @@ onMounted(async () => {
         <div class="session" style="margin-top: 14px">
           <div>
             <div class="session-title">每日自动签到</div>
-            <div class="sub">开启后每天 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证执行签到。</div>
+            <div class="sub">
+              开启后每天 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证执行签到；
+              若有凭证未签成功，会按 {{ catchupText }} 自动补签（用尽后等次日主时点）。
+            </div>
           </div>
           <NTag :type="store.settings?.autoCheckin ? 'success' : 'default'" :bordered="false" size="small">
             {{ store.settings?.autoCheckin ? '已开启' : '已关闭' }}

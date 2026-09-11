@@ -156,7 +156,7 @@ docker compose logs -f
 ```
 
 - 数据卷 `gateway-data` 持久化到 `/data/codebuddy.db`(SQLite),重启不丢
-- 每日自动签到由进程内定时器执行(UTC 03:17)
+- 每日自动签到由进程内定时器执行(UTC 03:17);未签成功的按 10/30/60/120 分钟递增补签,避免断签
 - 更新镜像:`docker compose pull && docker compose up -d`
 - 锁定版本:在 `.env` 中设置 `GATEWAY_VERSION=1.0.0`(默认 `latest`)
 
@@ -286,7 +286,7 @@ npm run typecheck
 | `GET` | `/admin/api/metrics` | 实时监控统计（流量时序、延迟分位、按模型/接口聚合） |
 | `GET` | `/admin/api/logs` | 运行日志（支持 `level` / `q` / `limit`） |
 | `POST` | `/admin/api/chat-test/stream` | 流式试跑（SSE：reasoning / content / usage / done 事件） |
-| ⏰ | 进程内定时器 UTC 03:17 | 每日自动签到（需在设置开启） |
+| ⏰ | 进程内定时器 UTC 03:17 | 每日自动签到（需在设置开启）；未签成功的按 10/30/60/120 分钟递增补签 |
 | `GET` | `/` | 品牌落地页（网关介绍 / 协议入口 / 管理导航，无鉴权） |
 | `GET` | `/health` | 健康检查（浏览器访问返回状态页，监控仍取 JSON） |
 | `OPTIONS` | `*` | CORS 预检 |

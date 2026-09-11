@@ -14,7 +14,7 @@
  */
 
 import { createNodeKv } from './node-kv';
-import { performAutoCheckins } from './scheduled';
+import { performAutoCheckins, planNextCheckinRun } from './scheduled';
 import { installProcessGuards } from './process-guards';
 import worker from './index';
 import type { Env } from './utils';
@@ -53,20 +53,38 @@ function buildNodeEnv(): Env {
   return nodeEnv;
 }
 
-// ── 每日自动签到定时器(UTC 03:17) ──────────────────────────────────────────
+// ── 每日自动签到定时器(UTC 03:17,失败自动补签) ────────────────────────────
+//
+// 主时点执行一轮;若仍有凭证未签到(网络抖动/上游 5xx/容器恰在时点重启),
+// 按递增间隔补签若干次,用尽后等次日主时点。调度决策见 scheduled.ts
+// 的 planNextCheckinRun(纯函数,可单测)。
 
 function scheduleDailyCheckin(env: Env): void {
-  const now = new Date();
-  const next = new Date(now);
-  next.setUTCHours(3, 17, 0, 0);
-  if (next.getTime() <= now.getTime()) {
-    next.setUTCDate(next.getUTCDate() + 1);
-  }
-  const delay = next.getTime() - now.getTime();
-  setTimeout(() => {
-    performAutoCheckins(env).catch(() => undefined);
-    scheduleDailyCheckin(env);
-  }, delay);
+  let catchupIndex = 0;
+
+  const run = (delayMs: number): void => {
+    setTimeout(() => {
+      performAutoCheckins(env)
+        .then((report) => {
+          const plan = planNextCheckinRun(report.pending, catchupIndex);
+          catchupIndex = plan.catchupIndex;
+          if (report.pending > 0 && plan.catchupIndex > 0) {
+            console.log(
+              `[codebuddy-gateway] 签到补签：仍有 ${report.pending} 个凭证未签到，` +
+                `${Math.round(plan.delayMs / 60_000)} 分钟后重试`,
+            );
+          }
+          run(plan.delayMs);
+        })
+        .catch(() => {
+          // 整轮异常(如存储不可用):退回次日主时点,避免死循环
+          catchupIndex = 0;
+          run(planNextCheckinRun(0, 0).delayMs);
+        });
+    }, delayMs);
+  };
+
+  run(planNextCheckinRun(0, 0).delayMs);
 }
 
 // ── HTTP 适配 ──────────────────────────────────────────────────────────────

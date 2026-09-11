@@ -48,6 +48,8 @@ export interface GatewayConfig {
   rateLimit: { perMinute: number; burst: number };
   sessionTtlHours: number;
   checkinSchedule: string;
+  /** 主时点后仍有未签到凭证时的补签间隔(分钟) */
+  checkinCatchupMinutes: number[];
   upstream: { chat: string; quota: string; config: string; refresh: string };
   timeout: { totalSeconds: number; connectSeconds: number };
 }

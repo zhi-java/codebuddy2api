@@ -447,8 +447,9 @@ onMounted(async () => {
         <div>
           <div class="checkin-title">每日自动签到</div>
           <div class="sub">
-            每天 11:17 由网关对全部启用凭证执行签到（Buddy 加油站，每日 100 credits）。活动按期开放，
-            当前期次与剩余天数可在行内「签到状态」查看；关闭后仅保留行内「立即签到」按钮。
+            每天 11:17 由网关对全部启用凭证执行签到（Buddy 加油站，每日 100 credits），未签成功的会
+            自动补签，避免断签。活动按期开放，当前期次与剩余天数可在行内「签到状态」查看；
+            关闭后仅保留行内「立即签到」按钮。
           </div>
         </div>
         <NSwitch :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />

@@ -11,6 +11,7 @@ import { getTokenStore, hashApiKey } from './store';
 import { renderLoginPage } from './admin-ui';
 import { serveAppShell, serveStaticFile } from './static';
 import { fetchCheckinStatus, fetchCredentialQuota, fetchDailyCheckin } from './upstream-billing';
+import { CATCHUP_DELAYS_MIN, CHECKIN_UTC_HOUR, CHECKIN_UTC_MINUTE } from './scheduled';
 import { createSseReader, parseSseJsonChunks } from './protocol/sse';
 import { prepareChatPayload } from './payload';
 import type { ClientKey, Credential, CredentialKind } from './types';
@@ -221,7 +222,8 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
           thinkingMode: (env.EMIT_THINKING || 'auto').toLowerCase(),
           rateLimit: { perMinute: limit.perMinute, burst: limit.burst },
           sessionTtlHours: Math.round(SESSION_TTL_MS / 3600_000),
-          checkinSchedule: 'UTC 03:17',
+          checkinSchedule: `UTC ${String(CHECKIN_UTC_HOUR).padStart(2, '0')}:${String(CHECKIN_UTC_MINUTE).padStart(2, '0')}`,
+          checkinCatchupMinutes: CATCHUP_DELAYS_MIN,
           upstream: {
             chat: env.UPSTREAM_CHAT_COMPLETIONS_URL,
             quota: env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL,
