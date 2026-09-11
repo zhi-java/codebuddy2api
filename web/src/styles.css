@@ -1,0 +1,131 @@
+/**
+ * 设计令牌（与 design-system/codebuddy-gateway/MASTER.md 对齐）。
+ *
+ * 深色优先：默认即深色，浅色作为系统偏好例外。
+ * 组件外观由 Naive UI 主题接管，这里只定义页面级底色、字体与语义色变量，
+ * 供自绘图表、代码块等无法走主题的场景使用。
+ */
+
+:root {
+  /* 表面与背景 */
+  --bg: #020617;
+  --surface: #0f172a;
+  --surface-2: #1e293b;
+  --surface-3: #1a1e2f;
+  --border: #334155;
+  --border-soft: #1e293b;
+
+  /* 文本 */
+  --text: #f8fafc;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+
+  /* 语义色 */
+  --accent: #22c55e;
+  --accent-soft: rgba(34, 197, 94, 0.14);
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.14);
+  --warn: #f59e0b;
+  --warn-soft: rgba(245, 158, 11, 0.14);
+  --info: #38bdf8;
+  --info-soft: rgba(56, 189, 248, 0.14);
+
+  /* 图表 */
+  --chart-bar: rgba(34, 197, 94, 0.35);
+  --chart-bar-strong: rgba(34, 197, 94, 0.7);
+  --chart-error: #ef4444;
+  --chart-grid: rgba(148, 163, 184, 0.16);
+
+  /* 动效 */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 180ms;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fb;
+    --surface: #ffffff;
+    --surface-2: #f1f5f9;
+    --surface-3: #eef2f7;
+    --border: #cbd5e1;
+    --border-soft: #e2e8f0;
+    --text: #0f172a;
+    --text-2: #475569;
+    --text-3: #94a3b8;
+    --accent: #16a34a;
+    --accent-soft: #dcfce7;
+    --danger: #dc2626;
+    --danger-soft: #fee2e2;
+    --warn: #b45309;
+    --warn-soft: #fef3c7;
+    --info: #0284c7;
+    --info-soft: #e0f2fe;
+    --chart-bar: rgba(22, 163, 74, 0.35);
+    --chart-bar-strong: rgba(22, 163, 74, 0.75);
+    --chart-error: #dc2626;
+    --chart-grid: rgba(100, 116, 139, 0.2);
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 Inter, ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'tnum';
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* 可交互元素统一指针与过渡（150–300ms） */
+button,
+[role='button'],
+a,
+.n-menu-item-content,
+.n-data-table-tr {
+  cursor: pointer;
+}
+
+.mono {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-ligatures: none;
+}
+
+/* 次级文本层级：表格副标题、说明等 */
+.sub {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* 页面级滚动容器 */
+.page {
+  max-width: 1360px;
+  margin: 0 auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
