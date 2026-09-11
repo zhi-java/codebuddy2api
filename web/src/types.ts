@@ -130,6 +130,28 @@ export interface QuotaInfo {
   checkedAt?: number;
 }
 
+/**
+ * 签到活动状态(Buddy 加油站)。
+ * 上游按期开放(如第 8 期「开学季」2026-09-01~09-15),期号与档期均为下发的只读信息。
+ */
+export interface CheckinStatus {
+  active: boolean;
+  todayCheckedIn: boolean;
+  streakDays: number;
+  dailyCredit: number;
+  todayCredit: number;
+  totalCredits: number;
+  season: number;
+  activityName?: string;
+  themeName?: string;
+  startTime?: string;
+  endTime?: string;
+  actionButton?: { show: boolean; text: string; action: string };
+  /** 该凭证能否执行领取(控制台 API Key 仅可查询状态) */
+  canClaim: boolean;
+  claimBlockedReason?: string;
+}
+
 /** 试跑会话中的一条消息(前端本地维护) */
 export interface PlaygroundMessage {
   role: 'user' | 'assistant';

@@ -20,6 +20,7 @@ Node.js 反向代理网关：把 OpenAI / Anthropic / Responses 协议转成 Cod
 - **实时监控与日志** — 60 分钟流量时序、延迟分位、token 消耗（输入/输出/速率）、按模型/接口聚合、近期错误；运行日志支持级别/关键词过滤与导出
 - **控制台体验** — 深色优先可切换、`Ctrl/Cmd + K` 命令面板、hash 深链、自动刷新（切后台自动暂停）
 - **额度查询代理** — 透传 `/quota` 积分查询，自动转发 `Authorization`
+- **每日签到（Buddy 加油站）** — 按期活动（如第 8 期「开学季」），每日 100 credits；控制台可查期次/连续天数/本期累计/剩余天数，无领取权限的凭证会明确提示而非静默失败
 - **CORS 跨域支持** — 可配置允许来源与凭证
 - **可配置超时** — 总超时与连接超时分离控制
 - **调试日志** — 开启后输出请求/响应详情（敏感头自动脱敏）
@@ -278,7 +279,8 @@ npm run typecheck
 | `POST` | `/admin/api/test` | 凭证连通性自测 |
 | `POST` | `/admin/api/chat-test` | Chat 试跑（聚合对话，返回文本/推理/用量） |
 | `GET` | `/admin/api/credentials/:id/quota` | 凭证额度查询 |
-| `POST` | `/admin/api/credentials/:id/checkin` | 每日签到领取 credits（手动） |
+| `GET` | `/admin/api/credentials/:id/checkin-status` | 签到活动状态（只读：期次 / 连续天数 / 本期累计 / 剩余天数 / 领取权限） |
+| `POST` | `/admin/api/credentials/:id/checkin` | 每日签到领取 credits（手动，100 credits/天） |
 | `GET/PUT` | `/admin/api/settings` | 网关设置（自动签到开关） |
 | `GET` | `/admin/api/config` | 运行配置（只读，不含密钥） |
 | `GET` | `/admin/api/metrics` | 实时监控统计（流量时序、延迟分位、按模型/接口聚合） |
@@ -422,7 +424,8 @@ npm test
 - 三协议适配（Chat Completions / Anthropic Messages / OpenAI Responses）与思考内容输出
 - 上游错误透传、空响应回填与凭证级故障转移
 - 三协议端点端到端、内容协商与 SPA 入口、控制台静态托管（含目录穿越防护）
-- 入口限流、上游计费（额度解析 / 每日签到）与自动签到语义
+- 入口限流、上游计费（额度解析 / 签到状态解析）与自动签到语义
+  （含：旧路径恒返回 inactive、`ck_` 控制台 Key 可读不可领、按 JWT 形态而非 kind 判权限）
 - 运行时可靠性：SSE 心跳、空流兜底、Key 级模型别名
 - 实时监控统计（滚动窗口、延迟分位、按模型/接口聚合）与运行日志缓冲（级别/关键词过滤）
 - 管理端新增能力：只读运行配置（不泄漏密钥）与流式试跑事件序列

@@ -38,7 +38,7 @@ import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
 import { KIND_NAME, STATUS_META, fmtTime, num, relTime } from '../format';
 import { loadSettings, refreshCredentials, saveSettings, store } from '../store';
-import type { CredentialSummary, CredentialStatus, QuotaInfo } from '../types';
+import type { CheckinStatus, CredentialSummary, CredentialStatus, QuotaInfo } from '../types';
 
 const message = useMessage();
 const dialog = useDialog();
@@ -59,6 +59,11 @@ const quotaOpen = ref(false);
 const quotaLoading = ref(false);
 const quotaTarget = ref<CredentialSummary | null>(null);
 const quota = ref<QuotaInfo | null>(null);
+
+const checkinOpen = ref(false);
+const checkinLoading = ref(false);
+const checkinTarget = ref<CredentialSummary | null>(null);
+const checkinStatus = ref<CheckinStatus | null>(null);
 
 const kindOptions = [
   { label: '控制台 API Key（ck_ 开头，不会过期）', value: 'ck_apikey' },
@@ -143,21 +148,55 @@ const quotaPercent = computed(() => {
   return Math.max(0, Math.min(100, Math.round((remaining / data.total) * 100)));
 });
 
+/** 签到活动状态抽屉：只读查询，展示期次/连续天数/累计积分 */
+async function openCheckin(row: CredentialSummary): Promise<void> {
+  checkinTarget.value = row;
+  checkinStatus.value = null;
+  checkinOpen.value = true;
+  checkinLoading.value = true;
+  try {
+    const res = await api<DataResponse<CheckinStatus>>(
+      `/admin/api/credentials/${encodeURIComponent(row.id)}/checkin-status`,
+    );
+    checkinStatus.value = res.data ?? null;
+  } catch (err) {
+    message.error(`签到状态查询失败：${(err as Error).message}`);
+  } finally {
+    checkinLoading.value = false;
+  }
+}
+
+/** 本期剩余天数（活动档期由上游下发，如第 8 期「开学季」至 09-15） */
+const checkinDaysLeft = computed(() => {
+  const end = checkinStatus.value?.endTime;
+  if (!end) return null;
+  const ts = Date.parse(end.replace(' ', 'T'));
+  if (Number.isNaN(ts)) return null;
+  return Math.max(0, Math.ceil((ts - Date.now()) / 86_400_000));
+});
+
 async function doCheckin(row: CredentialSummary): Promise<void> {
   dialog.warning({
     title: '每日签到',
-    content: `将对上游账号「${row.name}」执行每日签到（可能领取 credits 奖励），确认继续？`,
+    content: `将对上游账号「${row.name}」执行每日签到（Buddy 加油站，每日 100 credits），确认继续？`,
     positiveText: '继续',
     negativeText: '取消',
     onPositiveClick: () =>
       run(row.id, '签到', async () => {
-        const res = await api<DataResponse<{ credit?: number; streakDays?: number; message?: string }>>(
+        const res = await api<DataResponse<{ credit?: number; streakDays?: number; message?: string; status?: CheckinStatus }>>(
           `/admin/api/credentials/${encodeURIComponent(row.id)}/checkin`,
           { method: 'POST' },
         );
         const data = res.data ?? {};
-        if (data.credit && data.credit > 0) message.success(`签到成功：+${data.credit} credits`);
-        else message.info(data.message ?? '签到完成');
+        if (data.credit && data.credit > 0) {
+          message.success(`签到成功：+${data.credit} credits（连续 ${data.streakDays} 天）`);
+        } else {
+          message.info(data.message ?? '签到完成');
+        }
+        // 若抽屉正打开着该凭证，同步刷新状态
+        if (checkinOpen.value && checkinTarget.value?.id === row.id) {
+          checkinStatus.value = data.status ?? checkinStatus.value;
+        }
       }),
   });
 }
@@ -243,7 +282,8 @@ async function batchToggle(enabled: boolean): Promise<void> {
 
 const rowMenu = (row: CredentialSummary) => [
   { label: '查看额度', key: 'quota' },
-  { label: '每日签到', key: 'checkin' },
+  { label: '签到状态', key: 'checkin-status' },
+  { label: '立即签到', key: 'checkin' },
   { label: row.enabled ? '停用' : '启用', key: 'toggle' },
   { type: 'divider', key: 'd1' },
   { label: '删除凭证', key: 'delete' },
@@ -251,6 +291,7 @@ const rowMenu = (row: CredentialSummary) => [
 
 function onRowMenu(row: CredentialSummary, key: string): void {
   if (key === 'quota') void openQuota(row);
+  else if (key === 'checkin-status') void openCheckin(row);
   else if (key === 'checkin') void doCheckin(row);
   else if (key === 'toggle') void doToggle(row);
   else if (key === 'delete') doDelete(row);
@@ -357,6 +398,7 @@ async function toggleAutoCheckin(value: boolean): Promise<void> {
   try {
     await saveSettings({ autoCheckin: value });
     message.success(value ? '已开启自动签到（每日 11:17）' : '已关闭自动签到');
+    // 开关只控制是否自动执行；活动是否开放由上游按期下发，不在此处判断
   } catch (err) {
     autoCheckin.value = !value;
     message.error(`保存失败：${(err as Error).message}`);
@@ -405,7 +447,8 @@ onMounted(async () => {
         <div>
           <div class="checkin-title">每日自动签到</div>
           <div class="sub">
-            每天 11:17 由网关对全部启用凭证执行签到并领取 credits；关闭后仅保留行内「签到」按钮。
+            每天 11:17 由网关对全部启用凭证执行签到（Buddy 加油站，每日 100 credits）。活动按期开放，
+            当前期次与剩余天数可在行内「签到状态」查看；关闭后仅保留行内「立即签到」按钮。
           </div>
         </div>
         <NSwitch :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
@@ -514,6 +557,71 @@ onMounted(async () => {
           </ul>
         </template>
         <NEmpty v-else description="未获取到额度数据" />
+      </NDrawerContent>
+    </NDrawer>
+
+    <!-- 签到状态抽屉（只读，无副作用） -->
+    <NDrawer v-model:show="checkinOpen" :width="420" placement="right">
+      <NDrawerContent :title="`签到状态 · ${checkinTarget?.name ?? ''}`" closable>
+        <div v-if="checkinLoading" class="sub">查询中…</div>
+        <template v-else-if="checkinStatus">
+          <NTag
+            :type="checkinStatus.active ? 'success' : 'default'"
+            size="small"
+            :bordered="false"
+            style="margin-bottom: 12px"
+          >
+            {{ checkinStatus.active ? '活动进行中' : '活动未开放' }}
+            <template v-if="checkinStatus.season">
+              · 第 {{ checkinStatus.season }} 期 {{ checkinStatus.activityName ?? '' }}
+            </template>
+          </NTag>
+
+          <ul class="kv">
+            <li>
+              <span>今日状态</span>
+              <b>{{ checkinStatus.todayCheckedIn ? `已领取 +${num(checkinStatus.todayCredit)}` : '未领取' }}</b>
+            </li>
+            <li><span>每日额度</span><b>{{ num(checkinStatus.dailyCredit) }} credits</b></li>
+            <li><span>连续签到</span><b>{{ checkinStatus.streakDays }} 天</b></li>
+            <li><span>本期累计</span><b>{{ num(checkinStatus.totalCredits) }} credits</b></li>
+            <li>
+              <span>本期档期</span>
+              <b>{{ checkinStatus.startTime || '—' }} ~ {{ checkinStatus.endTime || '—' }}</b>
+            </li>
+            <li v-if="checkinDaysLeft !== null">
+              <span>剩余</span>
+              <b>{{ checkinDaysLeft }} 天</b>
+            </li>
+            <li v-if="checkinStatus.themeName"><span>活动位</span><b>{{ checkinStatus.themeName }}</b></li>
+          </ul>
+
+          <NCard v-if="!checkinStatus.canClaim" size="small" style="margin-top: 12px">
+            <div class="sub">
+              {{ checkinStatus.claimBlockedReason || '该凭证无权执行领取' }}。
+              如需领取，请改用 CLI OAuth 形态的凭证。
+            </div>
+          </NCard>
+
+          <NCard
+            v-if="checkinStatus.actionButton?.show && checkinStatus.actionButton.action"
+            size="small"
+            style="margin-top: 12px"
+          >
+            <div class="sub" style="margin-bottom: 8px">上游活动入口</div>
+            <NButton
+              tag="a"
+              :href="checkinStatus.actionButton.action"
+              target="_blank"
+              rel="noreferrer"
+              size="small"
+              secondary
+            >
+              {{ checkinStatus.actionButton.text || '前往活动页' }}
+            </NButton>
+          </NCard>
+        </template>
+        <NEmpty v-else description="未获取到签到状态" />
       </NDrawerContent>
     </NDrawer>
   </div>
