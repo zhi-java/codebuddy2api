@@ -31,13 +31,21 @@ LABEL org.opencontainers.image.title="CodeBuddy Gateway" \
 
 WORKDIR /app
 
-# 以非 root 运行:容器逃逸时限制影响面。node 镜像内置 uid=1000 的 node 用户。
+# 以非 root 运行应用:容器逃逸时限制影响面。node 镜像内置 uid=1000 的 node 用户。
 # /data 需在 VOLUME 声明前建好并改属主——首次挂载具名卷时 Docker 会复制该目录的
-# 权限,从而让 node 用户对卷可写;否则启动即因无法建库文件而崩溃。
+# 权限,从而让 node 用户对卷可写。
+# 注意:这只对**全新空卷**生效。若卷由旧版本(以 root 运行)创建,其内容属主是 root,
+# Docker 不会重新 chown。该升级场景由 docker-entrypoint.sh 在启动时自愈。
 RUN mkdir -p /data && chown -R node:node /data
+
+# su-exec:入口脚本降权用(体积约 10KB,Alpine 官方包)
+RUN apk add --no-cache su-exec
 
 COPY --from=build /app/dist ./dist
 COPY --from=web /web/dist ./public
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
     PORT=8787 \
@@ -52,6 +60,8 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-USER node
+# 入口以 root 启动仅用于修正数据卷属主,随即 su-exec 降权到 node 运行应用
+# (见 docker-entrypoint.sh)。应用进程始终为非 root。
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 CMD ["node", "dist/server.cjs"]

@@ -56,7 +56,8 @@ gateway/
 │   └── vite.config.ts    # base=/admin/，产物由网关托管
 ├── tests/
 │   └── run-tests.mjs  # 单元测试（esbuild 打包后用 Node 原生 assert）
-├── Dockerfile            # 三段构建：前端产物 → 服务端 bundle → 精简运行镜像（非 root）
+├── Dockerfile            # 三段构建：前端产物 → 服务端 bundle → 精简运行镜像
+├── docker-entrypoint.sh  # 入口：修正数据卷属主后降权到 node 运行（升级自愈）
 ├── docker-compose.yml         # 默认拉取 ghcr.io 预构建镜像
 ├── docker-compose.build.yml   # 可选覆盖层：从源码本地构建
 ├── .github/workflows/    # 打 tag 自动构建多架构镜像并推送 ghcr.io
@@ -158,6 +159,8 @@ docker compose logs -f
 - 数据卷 `gateway-data` 持久化到 `/data/codebuddy.db`(SQLite),重启不丢
 - 每日自动签到由进程内定时器执行(UTC 03:17);未签成功的按 10/30/60/120 分钟递增补签,避免断签
 - 更新镜像:`docker compose pull && docker compose up -d`
+  - 旧版镜像(以 root 运行)创建的卷属主为 root,新版以 `node` 运行时无法写库。
+    容器入口会在启动时自动修正 `/data` 属主后再降权运行,无需手工 `chown`
 - 锁定版本:在 `.env` 中设置 `GATEWAY_VERSION=1.0.0`(默认 `latest`)
 
 #### 从源码本地构建
@@ -454,7 +457,9 @@ tag 规则：`v1.0.0` → `1.0.0` / `1.0` / `1` / `latest`；预发布版本（�
 
 ## 安全说明
 
-- **容器以非 root 用户（`node`，uid 1000）运行**，缩小容器逃逸后的影响面
+- **应用进程以非 root 用户（`node`，uid 1000）运行**，缩小容器逃逸后的影响面。
+  容器入口以 root 启动仅用于修正数据卷属主（见 `docker-entrypoint.sh`），
+  随后立即 `su-exec` 降权，应用进程始终非 root
 - 代理转发时自动剥离逐跳头（hop-by-hop headers），避免连接复用问题
 - 调试日志会对 `authorization`、`cookie` 等敏感头脱敏后再输出
 - CORS 凭证模式（`CORS_ALLOW_CREDENTIALS`）默认关闭，按需开启
