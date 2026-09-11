@@ -10,7 +10,7 @@ import { forceRefreshCredential, getCredentialStatus } from './credentials';
 import { getTokenStore, hashApiKey } from './store';
 import { renderLoginPage } from './admin-ui';
 import { serveAppShell, serveStaticFile } from './static';
-import { fetchCredentialQuota, fetchDailyCheckin } from './upstream-billing';
+import { fetchCheckinStatus, fetchCredentialQuota, fetchDailyCheckin } from './upstream-billing';
 import { createSseReader, parseSseJsonChunks } from './protocol/sse';
 import { prepareChatPayload } from './payload';
 import type { ClientKey, Credential, CredentialKind } from './types';
@@ -333,7 +333,7 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
     return jsonResponse({ data: summarizeCredential(credential) }, env, 201);
   }
 
-  const credMatch = /^\/admin\/api\/credentials\/([^/]+)(\/refresh|\/quota|\/checkin)?$/.exec(path);
+  const credMatch = /^\/admin\/api\/credentials\/([^/]+)(\/refresh|\/quota|\/checkin|\/checkin-status)?$/.exec(path);
   if (credMatch) {
     const id = decodeURIComponent(credMatch[1]);
     const action = credMatch[2] ?? '';
@@ -363,6 +363,23 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
       } catch (err: unknown) {
         return jsonResponse(
           { error: 'Quota query failed', message: err instanceof Error ? err.message : String(err) },
+          env,
+          502,
+        );
+      }
+    }
+
+    // ── 签到活动状态(只读,无副作用;供控制台轮询)──────────
+    if (action === '/checkin-status' && request.method === 'GET') {
+      const credential = await store.getCredential(id);
+      if (!credential) return jsonResponse({ error: 'Not Found' }, env, 404);
+
+      try {
+        const status = await fetchCheckinStatus(credential, env);
+        return jsonResponse({ data: status }, env);
+      } catch (err: unknown) {
+        return jsonResponse(
+          { error: 'Check-in status failed', message: err instanceof Error ? err.message : String(err) },
           env,
           502,
         );

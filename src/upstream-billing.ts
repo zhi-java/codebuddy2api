@@ -50,6 +50,15 @@ interface BillingResponse {
   code?: unknown;
   msg?: unknown;
   data?: unknown;
+  /** 网关层(APISIX)鉴权/策略拒绝时的字段名与业务体不同 */
+  message?: unknown;
+}
+
+/** 取上游错误文案:业务体用 msg,网关策略拒绝用 message */
+function errorText(body: BillingResponse): string | undefined {
+  if (typeof body.msg === 'string' && body.msg) return body.msg;
+  if (typeof body.message === 'string' && body.message) return body.message;
+  return undefined;
 }
 
 /**
@@ -222,8 +231,54 @@ export async function fetchCredentialQuota(
   return parseQuota(body);
 }
 
-// ── 每日签到 ───────────────────────────────────────────────────────────────
+// ── 每日签到(Buddy 加油站,按期活动) ───────────────────────────────────────
+//
+// 实测要点(2026-09-11,三凭据交叉验证):
+//   - 状态查询:`POST /v2/billing/meter/checkin-activity-status` —— 只读,含活动期次/连续天数/已得积分
+//   - 领取签到:`POST /v2/billing/meter/daily-checkin`
+//   - 旧路径 `/billing/meter/checkin-status`(无 /v2) 是遗留端点,恒返回 active=false,
+//     不可用于判断活动是否进行;旧 `/billing/meter/daily-checkin` 虽可调用但不产出积分。
+//   - `ck_` 前缀的两段式 API Key 可**读**状态,但**领取**会被网关策略拒绝:
+//     HTTP 403 {"message":"API key not allowed for this path or method"}
+//   - 活动按期滚动(如第 8 期「开学季」2026-09-01~09-15),期号由 status 下发,无需硬编码。
 
+/** 签到活动状态(只读) */
+export interface CheckinStatus {
+  /** 活动是否进行中 */
+  active: boolean;
+  /** 今日是否已领取 */
+  todayCheckedIn: boolean;
+  /** 连续签到天数 */
+  streakDays: number;
+  /** 每日可得 credits */
+  dailyCredit: number;
+  /** 今日已得 credits */
+  todayCredit: number;
+  /** 本期累计 credited */
+  totalCredits: number;
+  /** 活动期次(如 8) */
+  season: number;
+  /** 活动名(如「开学季」) */
+  activityName?: string;
+  /** 品牌位名称(如「Buddy加油站」) */
+  themeName?: string;
+  /** 本期开始时间 */
+  startTime?: string;
+  /** 本期结束时间(期次滚动依据) */
+  endTime?: string;
+  /** 上游下发的引导按钮(如「认证领积分」) */
+  actionButton?: { show: boolean; text: string; action: string };
+}
+
+/** 状态查询结果 + 该凭据是否具备领取权限 */
+export interface CheckinStatusResult extends CheckinStatus {
+  /** 该凭据能否执行领取(ck_ 两段式 API Key 为 false) */
+  canClaim: boolean;
+  /** canClaim=false 时的原因 */
+  claimBlockedReason?: string;
+}
+
+/** 签到领取结果 */
 export interface CheckinResult {
   /** 本次获得 credits(0 表示无奖励/已签到) */
   credit: number;
@@ -231,32 +286,129 @@ export interface CheckinResult {
   isStreakDay: boolean;
   /** 上游提示语 */
   message?: string;
+  /** 领取后重新查询的状态(若可得) */
+  status?: CheckinStatus;
+}
+
+function parseCheckinStatus(data: Record<string, unknown>): CheckinStatus {
+  const ab = data.action_button as Record<string, unknown> | undefined;
+  return {
+    active: Boolean(data.active),
+    todayCheckedIn: Boolean(data.today_checked_in),
+    streakDays: toNum(data.streak_days),
+    dailyCredit: toNum(data.daily_credit),
+    todayCredit: toNum(data.today_credit),
+    totalCredits: toNum(data.total_credits),
+    season: toNum(data.season),
+    activityName: typeof data.activity_name === 'string' && data.activity_name ? data.activity_name : undefined,
+    themeName: typeof data.theme_name === 'string' && data.theme_name ? data.theme_name : undefined,
+    startTime: typeof data.start_time === 'string' && data.start_time ? data.start_time : undefined,
+    endTime: typeof data.end_time === 'string' && data.end_time ? data.end_time : undefined,
+    ...(ab && typeof ab === 'object'
+      ? {
+          actionButton: {
+            show: Boolean(ab.show),
+            text: typeof ab.text === 'string' ? ab.text : '',
+            action: typeof ab.action === 'string' ? ab.action : '',
+          },
+        }
+      : {}),
+  };
 }
 
 /**
- * 对上游账号执行每日签到。
+ * 判断 token 是否为 JWT(三段式,首段可解析出 JSON 头)。
+ * 注意:不能用 kind 判断——`ck_apikey` 类型下既有 JWT 形态的 token(可领取),
+ * 也有 `ck_xxx.yyy` 形态的控制台 API Key(不可领取);也不能只看是否含 `.`
+ * (该 Key 本身形如 `ck_<id>.<secret>`,含点但只有两段)。
+ */
+function isJwt(token: string | undefined): boolean {
+  if (!token || !token.startsWith('eyJ')) return false;
+  return token.split('.').length === 3;
+}
+
+/**
+ * 领取权限预判:控制台 API Key 形态的凭证可读状态,但领取类接口会被上游
+ * 以 HTTP 403 `API key not allowed for this path or method` 拒绝。
+ *
+ * 这是**预判**(用于控制台提前置灰),并非最终裁决——真实结果仍以领取接口的
+ * 403 为准(fetchDailyCheckin 会如实抛出)。
+ */
+function claimBlockedReasonFor(credential: Credential): string | undefined {
+  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
+  if (token && !isJwt(token)) {
+    return '该凭证为控制台 API Key，上游策略不允许其执行领取（仅可查询状态）';
+  }
+  return undefined;
+}
+
+/**
+ * 查询签到活动状态(只读,无副作用)。
+ * 不会改变上游账号状态,可在控制台安全轮询。
+ */
+export async function fetchCheckinStatus(
+  credential: Credential,
+  env: BillingEnv,
+): Promise<CheckinStatusResult> {
+  const { httpStatus, body } = await postBilling(
+    '/v2/billing/meter/checkin-activity-status',
+    credential,
+    env,
+    {},
+  );
+
+  if (httpStatus === 401 || httpStatus === 403) {
+    throw new Error(`上游鉴权失败(HTTP ${httpStatus})`);
+  }
+  if (body.code !== 0 || httpStatus >= 400) {
+    throw new Error(`签到状态查询被拒绝:${errorText(body) || `HTTP ${httpStatus}`}`);
+  }
+
+  const blocked = claimBlockedReasonFor(credential);
+  return {
+    ...parseCheckinStatus((body.data ?? {}) as Record<string, unknown>),
+    canClaim: !blocked,
+    ...(blocked ? { claimBlockedReason: blocked } : {}),
+  };
+}
+
+/**
+ * 对上游账号执行每日签到(Buddy 加油站)。
  * 注意:该操作会改变上游账号资源状态,调用方应经管理员显式操作触发。
  */
 export async function fetchDailyCheckin(
   credential: Credential,
   env: BillingEnv,
 ): Promise<CheckinResult> {
-  const { httpStatus, body } = await postBilling('/billing/meter/daily-checkin', credential, env, {});
+  const { httpStatus, body } = await postBilling('/v2/billing/meter/daily-checkin', credential, env, {});
 
-  if (httpStatus === 401 || httpStatus === 403) {
-    throw new Error(`上游鉴权失败(HTTP ${httpStatus})`);
+  const msg = errorText(body);
+
+  // 无领取权限:明确报错,避免被误判为"已签到"而静默吞掉
+  if (httpStatus === 403) {
+    throw new Error(`签到被拒绝:${msg || '该凭证无权执行领取'}`);
+  }
+  if (httpStatus === 401) {
+    throw new Error(`上游鉴权失败(HTTP 401)`);
   }
 
   const data = (body.data ?? {}) as Record<string, unknown>;
-  const msg = typeof body.msg === 'string' ? body.msg : undefined;
 
-  // 上游对"今日已签到"返回 HTTP 400 + code 10001:属正常业务状态,不视为失败
+  // 上游对"今日已签到"返回 HTTP 400 + code 10001:属正常业务状态,不视为失败。
+  // 此时补一次状态查询,保证 streakDays/totalCredits 仍可展示。
   if (body.code === 10001 || (httpStatus >= 400 && msg && msg.includes('已签到'))) {
+    let status: CheckinStatus | undefined;
+    try {
+      status = await fetchCheckinStatus(credential, env);
+    } catch {
+      // 状态查询失败不影响"已签到"这一结论
+    }
     return {
       credit: 0,
-      streakDays: 0,
+      streakDays: status?.streakDays ?? 0,
       isStreakDay: false,
       message: msg || '今天已签到,请明天再来',
+      ...(status ? { status } : {}),
     };
   }
 
@@ -264,11 +416,20 @@ export async function fetchDailyCheckin(
     throw new Error(`签到失败:${msg || `HTTP ${httpStatus}`}`);
   }
 
+  // 领取成功:回查状态以获得准确的本期累计与连续天数
+  let status: CheckinStatus | undefined;
+  try {
+    status = await fetchCheckinStatus(credential, env);
+  } catch {
+    // 忽略:回查仅用于补全展示字段
+  }
+
   return {
-    credit: toNum(data.credit),
-    streakDays: toNum(data.streak_days),
+    credit: toNum(data.credit) || status?.todayCredit || 0,
+    streakDays: toNum(data.streak_days) || status?.streakDays || 0,
     isStreakDay: Boolean(data.is_streak_day),
     message: msg,
+    ...(status ? { status } : {}),
   };
 }
 

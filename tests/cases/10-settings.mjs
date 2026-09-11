@@ -20,18 +20,32 @@
   await st.putSettings({ autoCheckin: true });
   assert.equal((await st.getSettings()).autoCheckin, true);
 
-  // 2. 自动签到:开关关闭 → 不触发;开启 → 逐个凭证签到
+  // 2. 自动签到:开关关闭 → 不触发;开启 → 先查状态再按权限领取
   const originalFetch = globalThis.fetch;
   const calls = [];
-  globalThis.fetch = async (url, init) => {
-    calls.push(String(url));
-    // 首个凭证成功 +100,其余报"已签到"
-    const ok = calls.length === 1;
+  const statusBody = (season) => ({
+    code: 0,
+    data: {
+      active: true, today_checked_in: false, streak_days: 2,
+      daily_credit: 100, today_credit: 0, total_credits: 200, season,
+    },
+  });
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    calls.push(u);
+    // 状态查询:活动进行中
+    if (/checkin-activity-status/.test(u)) {
+      return new Response(JSON.stringify(statusBody(8)), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }
+    // 领取:首个凭证成功 +100,其余报"已签到"
+    const claimCount = calls.filter((c) => /daily-checkin/.test(c)).length;
     return new Response(JSON.stringify(
-      ok
-        ? { code: 0, data: { credit: 100, streak_days: 2, is_streak_day: false } }
-        : { code: 12150, msg: '今日已签到' },
-    ), { status: 200, headers: { 'content-type': 'application/json' } });
+      claimCount === 1
+        ? { code: 0, data: { credit: 100, streak_days: 3, is_streak_day: false } }
+        : { code: 10001, msg: '今天已签到，请明天再来' },
+    ), { status: claimCount === 1 ? 200 : 400, headers: { 'content-type': 'application/json' } });
   };
   try {
     await st.putSettings({ autoCheckin: false });
@@ -41,12 +55,35 @@
     assert.equal(off.total, 0, '关闭时不执行');
 
     await st.putSettings({ autoCheckin: true });
-    await st.saveCredential({ id: 'a2', name: 'B', kind: 'ck_apikey', enabled: true, apiKey: 'ck2', createdAt: 1, updatedAt: 1 });
+    // JWT 形态凭证:具备领取权限
+    await st.saveCredential({
+      id: 'a2', name: 'B', kind: 'cli_oauth', enabled: true,
+      accessToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.sig', createdAt: 1, updatedAt: 1,
+    });
     await st.saveCredential({ id: 'a3', name: '停用', kind: 'ck_apikey', enabled: false, apiKey: 'ck3', createdAt: 1, updatedAt: 1 });
+    // a1 的 apiKey('ck1')非 JWT → 会被判为无领取权限而跳过(见下方 blocked 断言)
     const report = await performAutoCheckins({ CREDENTIALS_KV: kv, CREDENTIALS_ENC_SECRET: 'e' });
     assert.equal(report.total, 2, '仅统计启用凭证');
-    assert.equal(report.ok, 1);
-    assert.ok(calls.length >= 2);
+    assert.equal(report.ok, 1, '具备权限的凭证完成领取');
+    assert.equal(report.blocked, 1, 'ck_ 两段式 Key 因无领取权限被跳过');
+    assert.equal(report.season, 8, '期次由状态接口下发');
+    assert.ok(calls.some((c) => /checkin-activity-status/.test(c)), '领取前须先查状态');
+
+    // 2b. 活动未开放 → 不产生任何领取调用
+    const before = calls.length;
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ code: 0, data: { active: false, season: 9 } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    };
+    const idle = await performAutoCheckins({ CREDENTIALS_KV: kv, CREDENTIALS_ENC_SECRET: 'e' });
+    assert.equal(idle.inactive, 2, '活动未开放时全部跳过');
+    assert.equal(idle.ok, 0);
+    assert.equal(
+      calls.slice(before).filter((c) => /daily-checkin/.test(c)).length, 0,
+      '活动未开放时不应产生领取调用',
+    );
   } finally { globalThis.fetch = originalFetch; }
 
   // 3. 管理 API:settings 读写 + 界面开关元素
