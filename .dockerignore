@@ -4,5 +4,6 @@
 tests
 .tmp-test
 .git
+.github
 data
 web/dist

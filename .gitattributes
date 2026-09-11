@@ -1,0 +1,17 @@
+# 统一换行符策略。
+#
+# Dockerfile / compose / workflow 中的续行符(`\` 结尾)一旦被转成 CRLF,
+# 在 Linux 下会变成 "\r" 被当作参数一部分,导致构建或解析失败。
+# 这些文件必须锁定 LF,不受 core.autocrlf 影响。
+*.dockerfile text eol=lf
+Dockerfile      text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.sh            text eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

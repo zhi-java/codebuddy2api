@@ -55,8 +55,10 @@ gateway/
 │   └── vite.config.ts    # base=/admin/，产物由网关托管
 ├── tests/
 │   └── run-tests.mjs  # 单元测试（esbuild 打包后用 Node 原生 assert）
-├── Dockerfile            # 三段构建：前端产物 → 服务端 bundle → 精简运行镜像
-├── docker-compose.yml
+├── Dockerfile            # 三段构建：前端产物 → 服务端 bundle → 精简运行镜像（非 root）
+├── docker-compose.yml         # 默认拉取 ghcr.io 预构建镜像
+├── docker-compose.build.yml   # 可选覆盖层：从源码本地构建
+├── .github/workflows/    # 打 tag 自动构建多架构镜像并推送 ghcr.io
 ├── package.json
 └── tsconfig.json
 ```
@@ -108,22 +110,71 @@ npm run build    # 输出 web/dist，网关直接托管
 
 ## 快速开始
 
-### Docker Compose（推荐）
+### Docker 一键部署（推荐,无需源码）
+
+预构建镜像发布在 GitHub Container Registry,支持 `linux/amd64` 与 `linux/arm64`：
 
 ```bash
-# 1. 编辑 docker-compose.yml,把三个密钥换成强随机值
-#    (可先运行: openssl rand -hex 32 生成)
+# 1. 生成三个强随机密钥
+openssl rand -hex 32   # → ADMIN_PASSWORD
+openssl rand -hex 32   # → ADMIN_SESSION_SECRET
+openssl rand -hex 32   # → CREDENTIALS_ENC_SECRET
 
-# 2. 构建并启动（镜像内含控制台前端产物）
-docker compose up -d --build
+# 2. 直接运行(把上面三个值填进去)
+docker run -d --name codebuddy-gateway \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -e ADMIN_PASSWORD=<第一个密钥> \
+  -e ADMIN_SESSION_SECRET=<第二个密钥> \
+  -e CREDENTIALS_ENC_SECRET=<第三个密钥> \
+  -v codebuddy-gateway-data:/data \
+  ghcr.io/zhi-java/codebuddy2api:latest
+```
 
-# 3. 查看日志
+打开 `http://<你的IP>:8787/admin` 即可进入控制台。
+
+> 三个密钥**必须自行设置且保持稳定**:`ADMIN_PASSWORD` 是控制台登录密码,
+> `ADMIN_SESSION_SECRET` 用于会话签名,`CREDENTIALS_ENC_SECRET` 用于加密落盘的上游凭证。
+> 后两者一旦变更,已保存的登录态与凭证将全部失效,需重新录入。
+
+### Docker Compose
+
+需要版本锁定或自定义配置时用 compose。仓库内 `docker-compose.yml` 已指向预构建镜像：
+
+```bash
+# 1. 从模板生成本地配置
+cp .env.example .env
+
+# 2. 编辑 .env,把三个 CHANGE_ME 换成上一步生成的强随机值
+
+# 3. 拉取并启动(不构建)
+docker compose up -d
+
+# 4. 查看日志
 docker compose logs -f
 ```
 
 - 数据卷 `gateway-data` 持久化到 `/data/codebuddy.db`(SQLite),重启不丢
 - 每日自动签到由进程内定时器执行(UTC 03:17)
-- 更新:`git pull && docker compose up -d --build`
+- 更新镜像:`docker compose pull && docker compose up -d`
+- 锁定版本:在 `.env` 中设置 `GATEWAY_VERSION=1.0.0`(默认 `latest`)
+
+#### 从源码本地构建
+
+改动源码后需要自编译时,叠加构建覆盖层：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+#### 多架构说明
+
+发布镜像同时提供 amd64 与 arm64,Docker 会自动选择匹配的架构。
+若在 arm64 机器上拉到了 amd64 镜像(旧版 Docker 未启用 Buildx),可显式指定：
+
+```bash
+docker pull --platform linux/arm64 ghcr.io/zhi-java/codebuddy2api:latest
+```
 
 ### 裸 Node
 
@@ -167,6 +218,7 @@ npm run typecheck
 | `RATE_LIMIT_BURST` | `60` | 入口限流突发额度（令牌桶容量） |
 | `EMIT_THINKING` | 按客户端 | `auto` / `thinking` / `text` / `off`(思考输出策略) |
 | `DEBUG` | `false` | 是否开启调试日志（`1`/`true`/`yes`/`on` 均视为开启） |
+| `GATEWAY_VERSION` | `latest` | compose 拉取的镜像版本标签（仅影响 compose,非进程内变量） |
 | `ADMIN_PASSWORD` | — | 管理界面密码。**未设置时 `/admin` 返回 404** |
 | `ADMIN_SESSION_SECRET` | — | 会话 cookie 的 HMAC 签名密钥 |
 | `CREDENTIALS_ENC_SECRET` | — | 凭证落盘 AES-GCM 加密密钥 |
@@ -378,8 +430,28 @@ npm test
 - Token 消耗统计：非流式聚合 / 流式旁路 / 协议转换三条采集链路，无 usage 不误计、重复上报不重复累加
 - Node 部署端到端（健康检查、登录、管理、SQLite 持久化）
 
+## 镜像发布
+
+镜像发布在 GitHub Container Registry，支持 `linux/amd64` 与 `linux/arm64`：
+
+```
+ghcr.io/zhi-java/codebuddy2api:latest
+ghcr.io/zhi-java/codebuddy2api:1.0.0
+```
+
+发布流程：打版本 tag 并推送，CI 自动构建多架构镜像并推送。
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+tag 规则：`v1.0.0` → `1.0.0` / `1.0` / `1` / `latest`；预发布版本（如 `v1.0.0-rc.1`）**不覆盖 `latest`**。
+在 Actions 页面手动触发 workflow 可验证流水线，但不会推送镜像。
+
 ## 安全说明
 
+- **容器以非 root 用户（`node`，uid 1000）运行**，缩小容器逃逸后的影响面
 - 代理转发时自动剥离逐跳头（hop-by-hop headers），避免连接复用问题
 - 调试日志会对 `authorization`、`cookie` 等敏感头脱敏后再输出
 - CORS 凭证模式（`CORS_ALLOW_CREDENTIALS`）默认关闭，按需开启

@@ -1,6 +1,9 @@
 services:
   codebuddy-gateway:
-    build: .
+    # 普通用户:直接拉取预构建镜像(多架构 amd64/arm64),无需源码与构建工具。
+    # 开发者本地改代码构建: docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+    # 锁定版本:在 .env 中设置 GATEWAY_VERSION=1.0.0
+    image: ghcr.io/zhi-java/codebuddy2api:${GATEWAY_VERSION:-latest}
     container_name: codebuddy-gateway
     restart: unless-stopped
     ports:

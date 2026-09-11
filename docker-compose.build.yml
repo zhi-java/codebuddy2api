@@ -1,0 +1,15 @@
+# 本地构建覆盖层 —— 仅开发/自编译场景使用。
+#
+# 普通部署不要用本文件,直接 `docker compose up -d` 拉取 ghcr.io 预构建镜像即可。
+# 需要改动源码后本地构建时:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# 说明:同时给出 build 与 image,构建产物会被打上同一个 ghcr.io 镜像名,
+# 便于「先本地构建验证,再按需推送到 registry」。
+services:
+  codebuddy-gateway:
+    build:
+      context: .
+      args:
+        VERSION: local
+        REVISION: local
