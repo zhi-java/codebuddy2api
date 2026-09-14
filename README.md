@@ -139,6 +139,11 @@ docker run -d --name codebuddy-gateway \
 > `ADMIN_SESSION_SECRET` 用于会话签名,`CREDENTIALS_ENC_SECRET` 用于加密落盘的上游凭证。
 > 后两者一旦变更,已保存的登录态与凭证将全部失效,需重新录入。
 
+> **通过明文 HTTP 访问控制台时**:会话 cookie 是否带 `Secure` 会按请求协议自动判断
+> ——HTTPS(或 `X-Forwarded-Proto: https`)带,明文 HTTP 不带。若你的浏览器仍无法
+> 保持登录态,可用 `ADMIN_COOKIE_SECURE=false` 显式关闭(反向代理终结 TLS 但未传
+> 协议头时需设为 `true`)。
+
 ### Docker Compose
 
 需要版本锁定或自定义配置时用 compose。仓库内 `docker-compose.yml` 已指向预构建镜像：
