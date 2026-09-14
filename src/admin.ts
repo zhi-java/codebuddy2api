@@ -121,7 +121,7 @@ export async function handleAdmin(request: Request, env: Env, path: string): Pro
     return handleLogin(request, env, ip);
   }
   if (path === '/admin/logout' && request.method === 'POST') {
-    return withClearedCookie(jsonResponse({ ok: true }, env));
+    return withClearedCookie(jsonResponse({ ok: true }, env), env, request);
   }
 
   // ── 管理 API ──────────────────────────────────────────────────
@@ -173,6 +173,35 @@ p{color:#94a3b8;margin:8px 0}</style></head>
 </div></body></html>`;
 }
 
+/**
+ * 会话 cookie 是否带 Secure 属性。
+ *
+ * 浏览器只在 HTTPS(或被视为可信源的 localhost)下保存 Secure cookie。通过明文
+ * HTTP 访问内网地址时若仍带 Secure,cookie 会被静默丢弃 —— 表现为「密码正确
+ * 但登录后立刻退回未登录态」,极难排查。
+ *
+ * 判断顺序:
+ *   1. ADMIN_COOKIE_SECURE 显式设置(1/true/yes)时以其为准,便于反代终结 TLS
+ *   2. X-Forwarded-Proto 为 https(反代已终结 TLS)
+ *   3. request.url 协议为 https(Workers 等原生 HTTPS 运行时)
+ */
+function useSecureCookie(request: Request, env: Env): boolean {
+  const flag = env.ADMIN_COOKIE_SECURE?.trim().toLowerCase();
+  if (flag) return flag === '1' || flag === 'true' || flag === 'yes';
+
+  const proto = request.headers.get('X-Forwarded-Proto');
+  if (proto) return proto.split(',')[0].trim().toLowerCase() === 'https';
+
+  return new URL(request.url).protocol === 'https:';
+}
+
+function sessionCookie(token: string, maxAgeSeconds: number, secure: boolean): string {
+  return (
+    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; ` +
+    `Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`
+  );
+}
+
 async function handleLogin(request: Request, env: Env, ip: string): Promise<Response> {
   if (!checkRateLimit(`admin-login:${ip}`, 10, 60_000, 5)) {
     return jsonResponse({ error: 'Too Many Requests' }, env, 429);
@@ -194,16 +223,13 @@ async function handleLogin(request: Request, env: Env, ip: string): Promise<Resp
   const response = jsonResponse({ ok: true }, env);
   response.headers.append(
     'set-cookie',
-    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+    sessionCookie(token, Math.floor(SESSION_TTL_MS / 1000), useSecureCookie(request, env)),
   );
   return response;
 }
 
-function withClearedCookie(response: Response): Response {
-  response.headers.append(
-    'set-cookie',
-    `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-  );
+function withClearedCookie(response: Response, env: Env, request: Request): Response {
+  response.headers.append('set-cookie', sessionCookie('', 0, useSecureCookie(request, env)));
   return response;
 }
 

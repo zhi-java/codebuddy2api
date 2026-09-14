@@ -44,6 +44,7 @@ function buildNodeEnv(): Env {
     CREDENTIALS_KV: createNodeKv({ file: env.DATA_FILE || defaultData }),
     ...(env.ADMIN_PASSWORD ? { ADMIN_PASSWORD: env.ADMIN_PASSWORD } : {}),
     ...(env.ADMIN_SESSION_SECRET ? { ADMIN_SESSION_SECRET: env.ADMIN_SESSION_SECRET } : {}),
+    ...(env.ADMIN_COOKIE_SECURE ? { ADMIN_COOKIE_SECURE: env.ADMIN_COOKIE_SECURE } : {}),
     ...(env.CREDENTIALS_ENC_SECRET ? { CREDENTIALS_ENC_SECRET: env.CREDENTIALS_ENC_SECRET } : {}),
     ...(env.GATEWAY_KEY_PREFIX ? { GATEWAY_KEY_PREFIX: env.GATEWAY_KEY_PREFIX } : {}),
     ...(env.EMIT_THINKING ? { EMIT_THINKING: env.EMIT_THINKING } : {}),

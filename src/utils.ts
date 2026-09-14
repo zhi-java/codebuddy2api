@@ -27,6 +27,14 @@ export interface Env {
   EMIT_THINKING?: string;
   /** 管理会话签名密钥 */
   ADMIN_SESSION_SECRET?: string;
+  /**
+   * 管理会话 cookie 是否带 Secure 属性。
+   * 未设置时自动判断(HTTPS 或 X-Forwarded-Proto: https 时启用)。
+   * 通过明文 HTTP 访问管理台(如内网 IP:端口)时必须关闭,否则浏览器
+   * 会丢弃 Secure cookie 导致登录后立刻退回未登录态。
+   * 反向代理终结 TLS 的场景可显式设为 true。
+   */
+  ADMIN_COOKIE_SECURE?: string;
   /** 网关自建 key 前缀，默认 sk-cb */
   GATEWAY_KEY_PREFIX?: string;
   /** 入口限流:每分钟速率(按来源 IP) */

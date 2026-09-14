@@ -47,6 +47,65 @@
   const cookie = /cb_admin=([^;]+)/.exec(login.headers.get('set-cookie'))[1];
   const auth = { cookie: 'cb_admin=' + cookie, origin: 'https://w.example', 'X-Forwarded-For': nextIp() };
 
+  // ── Secure 属性按协议条件化 ──
+  // 浏览器只在 HTTPS(或可信源 localhost)下保存 Secure cookie。通过明文 HTTP 访问
+  // 内网地址时若仍带 Secure,cookie 被静默丢弃 → 「密码正确却登录不上」。
+  {
+    // HTTPS 源 → 必须带 Secure
+    assert.match(
+      login.headers.get('set-cookie'), /;\s*Secure/,
+      'HTTPS 登录的会话 cookie 须带 Secure',
+    );
+
+    // 明文 HTTP 源 → 不得带 Secure(否则 cookie 存不下)
+    const httpLogin = await handleAdmin(new Request('http://192.168.1.246:8787/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Forwarded-For': nextIp() },
+      body: JSON.stringify({ password: 'pw-123' }),
+    }), adminEnv, '/admin/login');
+    assert.equal(httpLogin.status, 200);
+    const httpCookie = httpLogin.headers.get('set-cookie');
+    assert.doesNotMatch(httpCookie, /;\s*Secure/, '明文 HTTP 登录的 cookie 不得带 Secure');
+    assert.match(httpCookie, /HttpOnly/, 'HttpOnly 与协议无关,必须保留');
+    assert.match(httpCookie, /SameSite=Lax/, 'SameSite 与协议无关,必须保留');
+
+    // 反向代理终结 TLS:按 X-Forwarded-Proto 判定
+    const proxied = await handleAdmin(new Request('http://gw.internal/admin/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Forwarded-Proto': 'https',
+        'X-Forwarded-For': nextIp(),
+      },
+      body: JSON.stringify({ password: 'pw-123' }),
+    }), adminEnv, '/admin/login');
+    assert.match(proxied.headers.get('set-cookie'), /;\s*Secure/, '反代标记 https 时须带 Secure');
+
+    // 显式开关优先于自动判断
+    const forcedOff = await handleAdmin(new Request('https://w.example/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Forwarded-For': nextIp() },
+      body: JSON.stringify({ password: 'pw-123' }),
+    }), { ...adminEnv, ADMIN_COOKIE_SECURE: 'false' }, '/admin/login');
+    assert.doesNotMatch(forcedOff.headers.get('set-cookie'), /;\s*Secure/, 'ADMIN_COOKIE_SECURE=false 须强制关闭');
+
+    const forcedOn = await handleAdmin(new Request('http://192.168.1.246:8787/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Forwarded-For': nextIp() },
+      body: JSON.stringify({ password: 'pw-123' }),
+    }), { ...adminEnv, ADMIN_COOKIE_SECURE: 'true' }, '/admin/login');
+    assert.match(forcedOn.headers.get('set-cookie'), /;\s*Secure/, 'ADMIN_COOKIE_SECURE=true 须强制开启');
+
+    // 登出清除 cookie 同样遵循协议(否则 HTTP 下登出无效)
+    const logout = await handleAdmin(new Request('http://192.168.1.246:8787/admin/logout', {
+      method: 'POST',
+      headers: { 'X-Forwarded-For': nextIp() },
+    }), adminEnv, '/admin/logout');
+    const logoutCookie = logout.headers.get('set-cookie');
+    assert.doesNotMatch(logoutCookie, /;\s*Secure/, '明文 HTTP 登出 cookie 不得带 Secure');
+    assert.match(logoutCookie, /Max-Age=0/, '登出须清空 cookie');
+  }
+
   // 已登录:创建凭证 → 创建 Key → 状态
   const created = await handleAdmin(adminReq('/admin/api/credentials', {
     body: JSON.stringify({ name: '主账号', kind: 'ck_apikey', apiKey: 'ck_sec' }),
