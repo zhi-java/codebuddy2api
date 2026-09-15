@@ -353,6 +353,7 @@ export async function resolveUpstreamCredential(
           userId: effective.userId ?? extractUserIdFromJwt(credentialToken),
           kind: effective.kind,
           credentialId: effective.id,
+          credentialName: effective.name,
         },
         clientKeyId: clientKey.id,
         clientKey,

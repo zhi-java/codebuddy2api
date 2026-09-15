@@ -21,6 +21,7 @@ import { handleAdmin } from './admin';
 import { renderLandingPage, renderPublicModelsPage, renderHealthPage } from './admin-ui';
 import { checkRateLimit, getRateLimitKey, maybeCleanupBuckets } from './rate-limiter';
 import {
+  completionTap,
   createSseTransformer,
   keepAliveTransform,
   parseSseJsonChunks,
@@ -276,6 +277,7 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
   const exposeReasoning = shouldExposeChatReasoning(payloadObject, env);
   let attempts = 0;
   let usedCredentialId: string | undefined;
+  let usedCredentialName: string | undefined;
 
   // 记录对象先建好:流式请求的 usage 由上游在流末尾给出,需要等响应流结束后
   // 由 usageTap 回填,所以不能在 handler 返回时一次性构造。
@@ -286,11 +288,26 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
     status: 0,
     durationMs: 0,
   };
+  // 供通用故障转移层写失败日志时读取(见 requestModels 说明)
+  requestModels.set(request, requestedModel);
   const onUsage = (usage: TokenUsage): void => attachTokenUsage(record, usage);
+
+  // 日志落笔时机:流式请求的 usage/credit 在流末尾才到,需由完成旁路触发;
+  // 非流式与错误路径在响应返回时即已齐全。用 once 保证两种路径各只记一条。
+  let finalized = false;
+  // 流式响应的 usage/credit 在流末尾才到:一旦把 finalize 交给完成旁路,
+  // 响应返回时就不能再落笔,否则日志会在 usage 到达前先写出空值。
+  let streamPending = false;
+  const finalize = (): void => {
+    if (finalized) return;
+    finalized = true;
+    logRequestOutcome(record, 'chat');
+  };
 
   const response = await withCredential(request, env, async (credential, clientKey) => {
     attempts += 1;
     usedCredentialId = credential.credentialId;
+    usedCredentialName = credential.credentialName;
     // Rewrite body(按命中 Key 应用 model 别名,再统一改写/强制流式)
     const prepared = payloadObject
       ? applyModelAlias(payloadObject, clientKey)
@@ -310,14 +327,16 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
 
       // 上游错误(无论是否流式)→ 可诊断透传(空 body 自动回填 JSON,客户端可读)
       if (!upstreamResponse.ok) {
-        logChatRequestShape(request, bodyStr, upstreamHeaders, upstreamResponse);
+        logChatRequestShape(request, bodyStr, upstreamHeaders, upstreamResponse, credential);
         return buildErrorResponse(upstreamResponse, env, request);
       }
       // 流式请求 → 原样透传
       if (clientRequestedStream) {
+        streamPending = true;
         return buildUpstreamResponse(upstreamResponse, env, request, {
           stripReasoning: !exposeReasoning,
           onUsage,
+          onComplete: finalize,
         });
       }
 
@@ -338,10 +357,56 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
   record.status = response.status;
   record.durationMs = Date.now() - startedAt;
   record.credentialId = usedCredentialId;
+  record.credentialName = usedCredentialName;
   record.retried = attempts > 1;
   if (response.status >= 400) record.error = requestErrorSummaries.get(request);
   recordRequest(record);
+  // 流式请求的 usage/credit 在流末尾才到:交给完成旁路落笔,
+  // 此处不能提前记(否则日志里 token/积分永远是空的)
+  if (!streamPending) finalize();
   return response;
+}
+
+/**
+ * 记录一次请求的最终去向:命中的上游凭证、状态、耗时、token 与积分消耗。
+ *
+ * 此前只有失败请求会写日志(`upstream_failure` / `credential_failover`),
+ * 成功请求在管理台日志页完全看不到 —— 用户无从确认「这次调用用了哪个凭证、
+ * 花了多少积分」。
+ *
+ * 流式请求的 usage/credit 由上游在流末尾给出,故此日志在流结束后才落笔;
+ * 未上报的字段留空("未上报"),不猜测、不估算。
+ */
+function logRequestOutcome(record: RequestRecord, channel: string): void {
+  const parts = [
+    `${record.model || '-'}`,
+    `凭证=${record.credentialName ?? record.credentialId ?? '透传'}`,
+    `状态=${record.status}`,
+    `${record.durationMs}ms`,
+  ];
+  if (record.retried) parts.push('已故障转移');
+  if (record.totalTokens !== undefined) {
+    parts.push(`token=${record.promptTokens}+${record.completionTokens}`);
+  }
+  // credit 为 0 是有效值(免费模型),用 !== undefined 区分「0 积分」与「未上报」
+  parts.push(record.credit !== undefined ? `积分≈${record.credit}` : '积分=未上报');
+
+  pushLog(record.status >= 400 ? 'warn' : 'info', 'request_completed',
+    `[${channel}] ${parts.join(' ')}`, {
+      channel,
+      path: record.path,
+      model: record.model,
+      credentialId: record.credentialId,
+      credentialName: record.credentialName,
+      status: record.status,
+      durationMs: record.durationMs,
+      retried: record.retried || undefined,
+      promptTokens: record.promptTokens,
+      completionTokens: record.completionTokens,
+      totalTokens: record.totalTokens,
+      credit: record.credit,
+      ...(record.error ? { error: record.error } : {}),
+    });
 }
 
 /**
@@ -367,9 +432,11 @@ async function handleQuota(request: Request, env: Env): Promise<Response> {
   const requestBody = await request.text();
   const body = requestBody.trim() ? requestBody : '{}';
   let usedCredentialId: string | undefined;
+  let usedCredentialName: string | undefined;
 
   const response = await withCredential(request, env, async (credential) => {
     usedCredentialId = credential.credentialId;
+    usedCredentialName = credential.credentialName;
     applyCredentialHeaders(upstreamHeaders, credential);
 
     try {
@@ -440,6 +507,7 @@ async function handleProtocolEndpoint(
   const requestedModel = typeof body['model'] === 'string' ? body['model'] : '';
   let attempts = 0;
   let usedCredentialId: string | undefined;
+  let usedCredentialName: string | undefined;
 
   // 同 chat 链路:usage 在流末尾才到,先建记录对象由旁路回填
   const record: RequestRecord = {
@@ -449,11 +517,24 @@ async function handleProtocolEndpoint(
     status: 0,
     durationMs: 0,
   };
+  requestModels.set(request, requestedModel);
   const onUsage = (usage: TokenUsage): void => attachTokenUsage(record, usage);
+
+  // 日志落笔时机:流式请求的 usage/credit 在流末尾才到,需由完成旁路触发;
+  // 非流式与错误路径在响应返回时即已齐全。用 once 保证两种路径各只记一条。
+  let finalized = false;
+  // 同 chat 链路:流式时把落笔交给完成旁路
+  let streamPending = false;
+  const finalize = (): void => {
+    if (finalized) return;
+    finalized = true;
+    logRequestOutcome(record, kind);
+  };
 
   const response = await withCredential(request, env, async (credential, clientKey) => {
     attempts += 1;
     usedCredentialId = credential.credentialId;
+    usedCredentialName = credential.credentialName;
     // 2. 目标协议请求 → 上游 chat payload(应用 Key 级模型别名)
     const chatPayload =
       kind === 'anthropic'
@@ -512,11 +593,13 @@ async function handleProtocolEndpoint(
         const upstreamBody = upstreamResponse.body
           ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
 
+        streamPending = true;
         // 用量旁路必须挂在协议转换之前:转换后的目标协议事件不再保留上游 usage。
-        // 顺序:观察上游原始 SSE → 协议转换 → 心跳保活
+        // 顺序:观察上游原始 SSE → 协议转换 → 完成旁路 → 心跳保活
         const stream = upstreamBody
           .pipeThrough(usageTap(onUsage))
           .pipeThrough(transform)
+          .pipeThrough(completionTap(finalize))
           .pipeThrough(keepAliveTransform());
 
         return new Response(stream, {
@@ -563,9 +646,13 @@ async function handleProtocolEndpoint(
   record.status = response.status;
   record.durationMs = Date.now() - startedAt;
   record.credentialId = usedCredentialId;
+  record.credentialName = usedCredentialName;
   record.retried = attempts > 1;
   if (response.status >= 400) record.error = requestErrorSummaries.get(request);
   recordRequest(record);
+  // 流式请求的 usage/credit 在流末尾才到:交给完成旁路落笔,
+  // 此处不能提前记(否则日志里 token/积分永远是空的)
+  if (!streamPending) finalize();
   return response;
 }
 
@@ -675,6 +762,7 @@ function logChatRequestShape(
   bodyStr: string,
   upstreamHeaders: Headers,
   upstreamResponse: Response,
+  credential?: UpstreamCredential,
 ): void {
   try {
     const body = JSON.parse(bodyStr) as Record<string, unknown>;
@@ -707,6 +795,8 @@ function logChatRequestShape(
       inboundHeaderNames: inboundHeaderNames.sort(),
       forwardedUserAgent: upstreamHeaders.get('user-agent'),
       forwardedIdeType: upstreamHeaders.get('x-ide-type'),
+      credentialId: credential?.credentialId,
+      credentialName: credential?.credentialName,
       upstreamStatus: upstreamResponse.status,
     });
   } catch {
@@ -798,7 +888,11 @@ function buildUpstreamResponse(
   upstreamResponse: Response,
   env: Env,
   request: Request,
-  options: { stripReasoning?: boolean; onUsage?: (usage: TokenUsage) => void } = {},
+  options: {
+    stripReasoning?: boolean;
+    onUsage?: (usage: TokenUsage) => void;
+    onComplete?: () => void;
+  } = {},
 ): Response {
   const responseHeaders = new Headers();
   upstreamResponse.headers.forEach((value, name) => {
@@ -825,7 +919,15 @@ function buildUpstreamResponse(
     if (options.onUsage) {
       body = body.pipeThrough(usageTap(options.onUsage));
     }
+    // 完成旁路:流结束时才拿得到 usage,日志需在此时落笔(置于 keepAlive 之前,
+    // 否则心跳会让流迟迟不结束,日志被推迟)
+    if (options.onComplete) {
+      body = body.pipeThrough(completionTap(options.onComplete));
+    }
     body = body.pipeThrough(keepAliveTransform());
+  } else if (options.onComplete) {
+    // 非流式 body:读完即算完成
+    options.onComplete();
   }
 
   return new Response(body, {
@@ -992,12 +1094,23 @@ function mergeDelta(
 const requestErrorSummaries = new WeakMap<Request, string>();
 
 /**
+ * 本次请求使用的模型名。
+ *
+ * 失败日志(upstream_failure / credential_failover / handler_threw)位于
+ * withCredential 的通用故障转移层,拿不到 handler 内解析出的模型名;
+ * 用 WeakMap 以 Request 为键传递,避免为每个调用点增加参数。
+ * 记录失败日志时能看出「是哪个模型失败了」。
+ */
+const requestModels = new WeakMap<Request, string>();
+
+/**
  * 统一解析客户端凭证并执行业务处理。
  *
  * 将凭证层的错误映射为 HTTP 语义：
  *   - UnauthorizedError        → 401（网关 key 无效/未登记）
  *   - UpstreamCredentialError  → 502（网关 key 有效，但上游凭证不可用）
  */
+// 渠道故障状态码统一由凭证层定义,与连通测试/试跑共用同一口径
 // 渠道故障状态码统一由凭证层定义,与连通测试/试跑共用同一口径
 const RETRYABLE_UPSTREAM_STATUSES = CHANNEL_FAULT_STATUSES;
 const EMPTY_UPSTREAM_RESPONSE_HEADER = 'x-gateway-empty-upstream';
@@ -1079,13 +1192,17 @@ async function logUpstreamFailure(
   pushLog(
     response.status >= 500 ? 'error' : 'warn',
     'upstream_failure',
-    `上游 ${response.status}${upstreamErrorCode ? ` (${upstreamErrorCode})` : ''}`,
+    `上游 ${response.status}${upstreamErrorCode ? ` (${upstreamErrorCode})` : ''}` +
+      `${requestModels.get(request) ? ` 模型=${requestModels.get(request)}` : ''}` +
+      `${credential.credentialName ? ` 凭证=${credential.credentialName}` : ''}`,
     {
       requestId: request.headers.get('x-request-id') || crypto.randomUUID(),
       upstreamRequestId: response.headers.get('x-request-id') || response.headers.get('traceid') || response.headers.get('eo-log-uuid'),
       path: new URL(request.url).pathname,
+      model: requestModels.get(request),
       status: response.status,
       credentialId: credential.credentialId,
+      credentialName: credential.credentialName,
       retrying,
       emptyBody: response.headers.get(EMPTY_UPSTREAM_RESPONSE_HEADER) === '1',
       responseBodyLength,
@@ -1138,7 +1255,9 @@ async function withCredential(
       const message = err instanceof Error ? err.message : String(err);
       pushLog('error', 'handler_threw', `请求处理抛出异常: ${message}`, {
         path: new URL(request.url).pathname,
+        model: requestModels.get(request),
         credentialId: resolved.credential.credentialId,
+        credentialName: resolved.credential.credentialName,
       });
       // 这是最终响应,返回前清掉内部标记,避免暴露网关实现细节
       return clearRetryMetadata(localFailureResponse(`Upstream error: ${message}`, 502));
@@ -1156,11 +1275,19 @@ async function withCredential(
     if (!credentialId) return clearRetryMetadata(response);
     excludedCredentialIds.add(credentialId);
     lastRetryableResponse = response;
-    pushLog('warn', 'credential_failover', `凭证 ${credentialId} 返回 ${response.status}，切换到下一个`, {
-      path: new URL(request.url).pathname,
-      status: response.status,
-      credentialId,
-    });
+    pushLog(
+      'warn',
+      'credential_failover',
+      `凭证 ${resolved.credential.credentialName ?? credentialId} 返回 ${response.status}` +
+        `${requestModels.get(request) ? `（模型=${requestModels.get(request)}）` : ''}，切换到下一个`,
+      {
+        path: new URL(request.url).pathname,
+        model: requestModels.get(request),
+        status: response.status,
+        credentialId,
+        credentialName: resolved.credential.credentialName,
+      },
+    );
     await markCredentialFailure(
       credentialId,
       `upstream HTTP ${response.status}${response.headers.get(EMPTY_UPSTREAM_RESPONSE_HEADER) === '1' ? ' (empty body)' : ''}`,

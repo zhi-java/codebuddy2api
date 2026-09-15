@@ -15,6 +15,8 @@ export interface RequestRecord {
   status: number;
   durationMs: number;
   credentialId?: string;
+  /** 命中的上游凭证名(便于日志直读,免去按 ID 反查) */
+  credentialName?: string;
   /** 该请求是否发生过凭证故障转移 */
   retried?: boolean;
   /** 失败请求的上游错误码/摘要(成功时缺失) */
@@ -27,6 +29,11 @@ export interface RequestRecord {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  /**
+   * 上游实报的积分消耗(usage.credit)。
+   * 流式请求同样由 attachTokenUsage 在流末尾补齐;缺省表示未上报。
+   */
+  credit?: number;
 }
 
 export interface MinuteBucket {
@@ -69,6 +76,10 @@ export interface MetricsSnapshot {
     tokenReported: number;
     /** 窗口内每分钟的平均 token 消耗(用于展示速率) */
     avgTokensPerMinute: number;
+    /** 上游实报的积分消耗合计(仅统计上报了 credit 的请求) */
+    credit: number;
+    /** 已上报 credit 的请求数,用于判断覆盖率 */
+    creditReported: number;
   };
   /** 服务进程运行信息(供「健康」区展示) */
   uptime: {
@@ -111,6 +122,8 @@ interface MetricsState {
     promptTokens: number;
     completionTokens: number;
     tokenReported: number;
+    credit: number;
+    creditReported: number;
   };
   /** 最近若干次耗时样本(环形上限),用于分位数 */
   latencies: number[];
@@ -135,6 +148,8 @@ function createState(): MetricsState {
       promptTokens: 0,
       completionTokens: 0,
       tokenReported: 0,
+      credit: 0,
+      creditReported: 0,
     },
     latencies: [],
     startedAt: Date.now(),
@@ -203,16 +218,26 @@ export function recordRequest(record: RequestRecord): void {
 }
 
 /**
- * 补齐一条请求的 token 用量。
+ * 补齐一条请求的 token 用量与积分消耗。
  *
- * 流式请求在 recordRequest 时还不知道 token 数(usage 由上游在流末尾给出),
+ * 流式请求在 recordRequest 时还拿不到 usage(由上游在流末尾给出),
  * 由响应流结束时的回调补齐。以 totalTokens 作幂等哨兵:重复调用(例如流被
  * 取消后又触发 flush)不会重复累加,缺失 usage 的请求则永远保持 undefined。
+ *
+ * credit 单独判重(不挂在 token 哨兵上):部分请求只有 credit 或只有 token,
+ * 且 credit 为 0 是有效值(免费模型),不能用真值判断。
  */
 export function attachTokenUsage(
   record: RequestRecord,
-  usage: { promptTokens: number; completionTokens: number },
+  usage: { promptTokens: number; completionTokens: number; credit?: number },
 ): void {
+  // 积分:独立回填。上游未上报时保持 undefined,便于界面区分「0 积分」与「未上报」。
+  if (record.credit === undefined && typeof usage.credit === 'number') {
+    record.credit = usage.credit;
+    state.totals.credit += usage.credit;
+    state.totals.creditReported += 1;
+  }
+
   if (record.totalTokens !== undefined) return;
 
   const toCount = (value: number): number => {
@@ -314,6 +339,8 @@ export function metricsSnapshot(now = Date.now()): MetricsSnapshot {
       totalTokens: state.totals.promptTokens + state.totals.completionTokens,
       tokenReported: state.totals.tokenReported,
       avgTokensPerMinute: Math.round((state.totals.promptTokens + state.totals.completionTokens) / activeMinutes),
+      credit: Math.round(state.totals.credit * 10000) / 10000,
+      creditReported: state.totals.creditReported,
     },
     uptime: { startedAt: state.startedAt, uptimeMs },
     series,

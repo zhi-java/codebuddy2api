@@ -61,12 +61,16 @@ export interface RequestRecord {
   status: number;
   durationMs: number;
   credentialId?: string;
+  /** 命中的上游凭证名(日志与列表直读,免去按 ID 反查) */
+  credentialName?: string;
   retried?: boolean;
   error?: string;
   /** 上游上报的 token 用量(流式请求在流结束后回填) */
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  /** 上游实报的积分消耗;undefined 表示上游未上报 */
+  credit?: number;
 }
 
 export interface MinuteBucket {
@@ -102,6 +106,10 @@ export interface MetricsSnapshot {
     /** 已上报 usage 的请求数(与 total 的比值即覆盖率) */
     tokenReported: number;
     avgTokensPerMinute: number;
+    /** 上游实报的积分消耗合计 */
+    credit: number;
+    /** 已上报 credit 的请求数 */
+    creditReported: number;
   };
   uptime: { startedAt: number; uptimeMs: number };
   series: MinuteBucket[];

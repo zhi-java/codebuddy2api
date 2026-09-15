@@ -210,10 +210,54 @@ export function keepAliveTransform(intervalMs = 15_000): TransformStream<Uint8Ar
  */
 export const SSE_DONE = 'data: [DONE]\n\n';
 
+/**
+ * 完成旁路:原样透传字节,并在流真正结束(flush)或被取消(cancel)时回调一次。
+ *
+ * 用于记录「凭证 + token/积分消耗」这类只有流末尾才齐全的信息 ——
+ * 若在响应返回时就记,usage 尚未到达,日志里永远是空的。
+ * 内部去重:flush 与 cancel 只会触发一次回调。
+ */
+export function completionTap(onComplete: () => void): TransformStream<Uint8Array, Uint8Array> {
+  let fired = false;
+  const fire = (): void => {
+    if (fired) return;
+    fired = true;
+    onComplete();
+  };
+  return new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+    },
+    flush() {
+      fire();
+    },
+    cancel() {
+      fire();
+    },
+  } as Transformer<Uint8Array, Uint8Array>);
+}
+
 /** 上游在流末尾给出的 token 用量 */
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
+  /**
+   * 上游实报的积分消耗(usage.credit)。
+   * 实测为小数字符串/数字(如 0.01、2.5),免费模型为 0;
+   * 缺失表示上游未上报 —— 不猜测、不估算。
+   */
+  credit?: number;
+}
+
+/** 从上游 usage 对象中取 credit(可能是 number 或数字字符串) */
+function pickCredit(record: Record<string, unknown>): number | undefined {
+  const raw = record['credit'];
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
 }
 
 /**
@@ -236,9 +280,10 @@ export function usageTap(onUsage: (usage: TokenUsage) => void): TransformStream<
       const record = usage as Record<string, unknown>;
       const promptTokens = typeof record['prompt_tokens'] === 'number' ? record['prompt_tokens'] : 0;
       const completionTokens = typeof record['completion_tokens'] === 'number' ? record['completion_tokens'] : 0;
-      if (promptTokens === 0 && completionTokens === 0) continue;
+      const credit = pickCredit(record);
+      if (promptTokens === 0 && completionTokens === 0 && credit === undefined) continue;
       reported = true;
-      onUsage({ promptTokens, completionTokens });
+      onUsage({ promptTokens, completionTokens, ...(credit !== undefined ? { credit } : {}) });
       return;
     }
   };
@@ -276,8 +321,9 @@ export function extractUsageFromSseText(body: string): TokenUsage | undefined {
     const record = usage as Record<string, unknown>;
     const promptTokens = typeof record['prompt_tokens'] === 'number' ? record['prompt_tokens'] : 0;
     const completionTokens = typeof record['completion_tokens'] === 'number' ? record['completion_tokens'] : 0;
-    if (promptTokens === 0 && completionTokens === 0) continue;
-    found = { promptTokens, completionTokens };
+    const credit = pickCredit(record);
+    if (promptTokens === 0 && completionTokens === 0 && credit === undefined) continue;
+    found = { promptTokens, completionTokens, ...(credit !== undefined ? { credit } : {}) };
   }
   return found;
 }

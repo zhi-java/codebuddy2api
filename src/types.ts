@@ -74,6 +74,8 @@ export interface UpstreamCredential {
   kind: CredentialKind | 'passthrough';
   /** 命中的凭证 ID（透传模式为空） */
   credentialId?: string;
+  /** 命中的凭证名，供日志直读（避免按 ID 反查；透传模式为空） */
+  credentialName?: string;
 }
 
 /**

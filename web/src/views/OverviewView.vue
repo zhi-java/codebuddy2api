@@ -25,7 +25,7 @@ import StatCard from '../components/StatCard.vue';
 import TrafficChart from '../components/TrafficChart.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
-import { fmtClock, fmtDuration, fmtMs, fmtTokens, num } from '../format';
+import { fmtClock, fmtCredit, fmtDuration, fmtMs, fmtTokens, num } from '../format';
 import { navigate } from '../router';
 import { refreshAll, store } from '../store';
 import type { MetricsSnapshot, RequestRecord } from '../types';
@@ -69,6 +69,14 @@ const tokenCoverage = computed(() => {
   return `${tokenReported}/${total} 次上报用量（${Math.round((tokenReported / total) * 100)}%）`;
 });
 
+/** 积分消耗:上游按 usage.credit 实报;未上报的请求不计入,故标注覆盖率 */
+const creditCoverage = computed(() => {
+  const current = totals.value;
+  if (!current || current.total === 0) return '暂无请求';
+  const { creditReported, total } = current;
+  return `${creditReported}/${total} 次上报积分（上游未上报的不计入）`;
+});
+
 const healthy = computed(() => {
   if (!counts.value || counts.value.credentials === 0) return null;
   const ratio = counts.value.healthy / counts.value.credentials;
@@ -109,16 +117,34 @@ const recentColumns: DataTableColumns<RequestRecord> = [
     render: (row) => h('span', { class: 'mono' }, row.totalTokens ? fmtTokens(row.totalTokens) : '—'),
   },
   {
+    title: '积分',
+    key: 'credit',
+    width: 88,
+    // 0 是有效值(免费模型),未上报才是 undefined —— 两者分开显示
+    render: (row) =>
+      h('span', { class: 'mono' }, row.credit !== undefined ? fmtCredit(row.credit) : '未上报'),
+  },
+  {
     title: '凭证',
-    key: 'credentialId',
+    key: 'credentialName',
     width: 150,
     render: (row) =>
       h(
         NTooltip,
         { trigger: 'hover' },
         {
-          trigger: () => h('span', { class: 'mono sub' }, row.credentialId || (row.retried ? '已故障转移' : '—')),
-          default: () => (row.retried ? '该请求发生凭证故障转移后成功' : row.credentialId ?? '未使用托管凭证'),
+          trigger: () =>
+            h(
+              'span',
+              { class: 'mono sub' },
+              row.credentialName || row.credentialId || (row.retried ? '已故障转移' : '—'),
+            ),
+          default: () =>
+            row.retried
+              ? '该请求发生凭证故障转移后成功'
+              : row.credentialName
+                ? `${row.credentialName}（${row.credentialId ?? ''}）`
+                : '未使用托管凭证（透传）',
         },
       ),
   },
@@ -204,6 +230,13 @@ onMounted(refresh);
         :value="totals ? `${fmtTokens(totals.avgTokensPerMinute)}/min` : '—'"
         :hint="tokenCoverage"
         icon="clock"
+      />
+      <StatCard
+        label="积分消耗"
+        :value="totals ? fmtCredit(totals.credit) : '—'"
+        :hint="creditCoverage"
+        icon="activity"
+        tone="warn"
       />
     </div>
 

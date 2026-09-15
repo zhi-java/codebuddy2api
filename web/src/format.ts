@@ -69,6 +69,18 @@ export function fmtTokens(value?: number): string {
   return `${(value / 1_000_000).toFixed(2)}M`;
 }
 
+/**
+ * 格式化积分消耗。上游按小数上报(如 0.01、2.5),整数位不显示多余小数,
+ * 极小值保留 4 位以免显示成 0。undefined 表示上游未上报。
+ */
+export function fmtCredit(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  if (value === 0) return '0';
+  if (value < 0.01) return value.toFixed(4);
+  if (Number.isInteger(value)) return value.toLocaleString('en-US');
+  return value.toFixed(2);
+}
+
 /** 从 token 用量对象里取一个数字字段 */
 export function usageNum(usage: Record<string, unknown> | undefined, key: string): number | undefined {
   const value = usage?.[key];
