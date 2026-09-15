@@ -191,5 +191,104 @@
     assert.equal((await ct.json()).content, '');
   } finally { globalThis.fetch = originalFetch; }
 
+  // ── 连通测试/试跑/签到查询 回写凭证状态 ──
+  //
+  // 回归:此前只有代理转发链路会清除 lastError,导致失败过的凭证即使
+  // 「测试通过」也一直显示 error —— 用户点了测试通过却看不到状态恢复。
+  //
+  // 注:admin.mjs 持有独立 store 单例,故全程经管理 API 读写,不经 store.mjs。
+  {
+    const cid = cred.data.id;
+
+    const readStatus = async () => {
+      const res = await handleAdmin(
+        adminReq('/admin/api/credentials', null, 'GET', auth),
+        adminEnv, '/admin/api/credentials',
+      );
+      return (await res.json()).data.find((c) => c.id === cid).status;
+    };
+    const callTest = () => handleAdmin(
+      adminReq('/admin/api/test', { body: JSON.stringify({ credentialId: cid }) }, 'POST', auth),
+      adminEnv, '/admin/api/test',
+    );
+    const callChatTest = () => handleAdmin(
+      adminReq('/admin/api/chat-test', {
+        body: JSON.stringify({ credentialId: cid, model: 'hy3', message: 'hi' }),
+      }, 'POST', auth),
+      adminEnv, '/admin/api/chat-test',
+    );
+    const callCheckin = () => handleAdmin(
+      adminReq('/admin/api/credentials/' + cid + '/checkin-status', null, 'GET', auth),
+      adminEnv, '/admin/api/credentials/' + cid + '/checkin-status',
+    );
+
+    // 起始应为健康(上一步 quota 成功已清除错误)
+    assert.equal(await readStatus(), 'healthy', '初始应健康');
+
+    // 1) 渠道故障(503)→ 标记 error
+    globalThis.fetch = async () => new Response('upstream boom', { status: 503 });
+    try {
+      const t = await callTest();
+      assert.equal(t.status, 200);
+      assert.equal((await t.json()).ok, false);
+      // 冷却为运行期状态,优先于持久化的 lastError 判定(见 getCredentialStatus)
+      assert.equal(await readStatus(), 'cooling', '渠道故障后进入 cooling');
+    } finally { globalThis.fetch = originalFetch; }
+
+    // 2) 连通测试通过 → 状态恢复 healthy(本次修复的核心)
+    globalThis.fetch = async () => new Response('data: {}\n\n', {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    });
+    try {
+      const t = await callTest();
+      assert.equal(t.status, 200);
+      assert.equal((await t.json()).ok, true);
+      assert.equal(await readStatus(), 'healthy', '测试通过后状态须恢复 healthy');
+    } finally { globalThis.fetch = originalFetch; }
+
+    // 3) 渠道故障 → cooling;再经试跑成功 → 恢复
+    globalThis.fetch = async () => new Response('boom', { status: 503 });
+    try { await callTest(); } finally { globalThis.fetch = originalFetch; }
+    assert.equal(await readStatus(), 'cooling', '试跑前应为 cooling');
+
+    globalThis.fetch = async () => new Response(
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+    try {
+      const ct = await callChatTest();
+      assert.equal(ct.status, 200);
+      assert.equal(await readStatus(), 'healthy', '试跑成功后状态须恢复 healthy');
+    } finally { globalThis.fetch = originalFetch; }
+
+    // 4) 签到状态查询成功 → 同样清除错误标记(只读调用亦证明凭证可用)
+    globalThis.fetch = async () => new Response('boom', { status: 503 });
+    try { await callTest(); } finally { globalThis.fetch = originalFetch; }
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 0, data: { active: true, season: 8, streak_days: 1, daily_credit: 100 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    try {
+      const cs = await callCheckin();
+      assert.equal(cs.status, 200);
+      assert.equal(await readStatus(), 'healthy', '签到查询成功后状态须恢复 healthy');
+    } finally { globalThis.fetch = originalFetch; }
+
+    // 5) 「请求本身有问题」的 400 → 不归咎凭证,状态不被污染
+    globalThis.fetch = async () => new Response('{"error":"bad model"}', {
+      status: 400, headers: { 'content-type': 'application/json' },
+    });
+    try {
+      await callTest();
+      assert.equal(await readStatus(), 'healthy', '400 请求问题不得污染凭证状态');
+    } finally { globalThis.fetch = originalFetch; }
+
+    // 6) 签到查询失败 → 不得污染凭证状态(计费接口不通 ≠ 模型链路不通)
+    globalThis.fetch = async () => new Response('nope', { status: 500 });
+    try {
+      await callCheckin();
+      assert.equal(await readStatus(), 'healthy', '签到查询失败不得污染凭证状态');
+    } finally { globalThis.fetch = originalFetch; }
+  }
+
   console.log('case05 admin passed');
 }

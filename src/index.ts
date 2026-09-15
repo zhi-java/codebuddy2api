@@ -10,6 +10,7 @@ import {
   markCredentialFailure,
   markCredentialSuccess,
   getCredentialStatus,
+  CHANNEL_FAULT_STATUSES,
   UnauthorizedError,
   UpstreamCredentialError,
 } from './credentials';
@@ -997,7 +998,8 @@ const requestErrorSummaries = new WeakMap<Request, string>();
  *   - UnauthorizedError        → 401（网关 key 无效/未登记）
  *   - UpstreamCredentialError  → 502（网关 key 有效，但上游凭证不可用）
  */
-const RETRYABLE_UPSTREAM_STATUSES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
+// 渠道故障状态码统一由凭证层定义,与连通测试/试跑共用同一口径
+const RETRYABLE_UPSTREAM_STATUSES = CHANNEL_FAULT_STATUSES;
 const EMPTY_UPSTREAM_RESPONSE_HEADER = 'x-gateway-empty-upstream';
 const LOCAL_FAILURE_HEADER = 'x-gateway-local-failure';
 

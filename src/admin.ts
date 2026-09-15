@@ -6,7 +6,13 @@
  */
 
 import { generateApiKey, randomId, signSession, timingSafeEqual, verifySession } from './crypto';
-import { forceRefreshCredential, getCredentialStatus } from './credentials';
+import {
+  CHANNEL_FAULT_STATUSES,
+  forceRefreshCredential,
+  getCredentialStatus,
+  markCredentialFailure,
+  markCredentialSuccess,
+} from './credentials';
 import { getTokenStore, hashApiKey } from './store';
 import { renderLoginPage } from './admin-ui';
 import { serveAppShell, serveStaticFile } from './static';
@@ -404,6 +410,10 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
 
       try {
         const status = await fetchCheckinStatus(credential, env);
+        // 状态查询是一次真实的上游鉴权调用,成功即证明凭证可用 → 清除历史错误标记。
+        // 注意:失败时**不**标记错误 —— 计费接口不通不等于模型链路不通
+        // (例如控制台 API Key 形态的凭证可查状态但无领取权限),贸然标记会误伤。
+        await markCredentialSuccess(credential.id, env).catch(() => undefined);
         return jsonResponse({ data: status }, env);
       } catch (err: unknown) {
         return jsonResponse(
@@ -577,20 +587,31 @@ async function handleTest(request: Request, env: Env): Promise<Response> {
       signal: controller.signal,
     });
 
+    // 测试是显式的可用性验证,结果回写凭证状态:
+    // 通过 → 清除历史错误标记(否则失败过的凭证会一直显示 error);
+    // 渠道故障(429/5xx 等)→ 记录失败,与转发链路同一口径;
+    // 其余(如带错误体的 400)→ 请求本身的问题,不归咎于凭证。
+    if (response.ok) {
+      await markCredentialSuccess(credentialId, env).catch(() => undefined);
+    } else if (CHANNEL_FAULT_STATUSES.has(response.status)) {
+      await markCredentialFailure(
+        credentialId,
+        `连通测试失败:上游 HTTP ${response.status}`,
+        env,
+      ).catch(() => undefined);
+    }
+
     return jsonResponse(
       { ok: response.ok, status: response.status, credential: credential.name },
       env,
     );
   } catch (err: unknown) {
-    return jsonResponse(
-      {
-        ok: false,
-        message: err instanceof Error ? err.message : String(err),
-        credential: credential.name,
-      },
-      env,
-      502,
+    const message = err instanceof Error ? err.message : String(err);
+    // 网络层异常(超时/连接失败)属渠道故障
+    await markCredentialFailure(credentialId, `连通测试失败:${message}`, env).catch(
+      () => undefined,
     );
+    return jsonResponse({ ok: false, message, credential: credential.name }, env, 502);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -660,18 +681,27 @@ async function handleChatTestStream(request: Request, env: Env): Promise<Respons
     });
   } catch (err: unknown) {
     clearTimeout(timeoutId);
-    return jsonResponse(
-      { error: 'Chat test failed', message: err instanceof Error ? err.message : String(err) },
-      env,
-      502,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    await markCredentialFailure(credentialId, `试跑失败:${message}`, env).catch(() => undefined);
+    return jsonResponse({ error: 'Chat test failed', message }, env, 502);
   }
 
   if (!upstream.ok) {
     const detail = (await upstream.text()).slice(0, 500);
     clearTimeout(timeoutId);
+    // 仅渠道故障归咎于凭证;带错误体的 400 属请求问题,不应误伤
+    if (CHANNEL_FAULT_STATUSES.has(upstream.status)) {
+      await markCredentialFailure(
+        credentialId,
+        `试跑失败:上游 HTTP ${upstream.status}`,
+        env,
+      ).catch(() => undefined);
+    }
     return jsonResponse({ error: 'Upstream error', status: upstream.status, detail }, env, 502);
   }
+
+  // 上游已接受并开始产出:视为该凭证可用,清除历史错误标记
+  await markCredentialSuccess(credentialId, env).catch(() => undefined);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -793,12 +823,23 @@ async function handleChatTest(request: Request, env: Env): Promise<Response> {  
 
     if (!response.ok) {
       const raw = await response.text();
+      // 试跑是真实调用,渠道故障同样回写凭证状态(与转发链路、连通测试同一口径)
+      if (CHANNEL_FAULT_STATUSES.has(response.status)) {
+        await markCredentialFailure(
+          credentialId,
+          `试跑失败:上游 HTTP ${response.status}`,
+          env,
+        ).catch(() => undefined);
+      }
       return jsonResponse(
         { error: 'Upstream error', status: response.status, detail: raw.slice(0, 500) },
         env,
         502,
       );
     }
+
+    // 上游已接受并开始产出:视为该凭证可用,清除历史错误标记
+    await markCredentialSuccess(credentialId, env).catch(() => undefined);
 
     const chunks = parseSseJsonChunks(await response.text());
     let content = '';
