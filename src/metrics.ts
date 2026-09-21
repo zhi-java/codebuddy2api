@@ -97,6 +97,40 @@ export interface MetricsSnapshot {
   recentErrors: RequestRecord[];
 }
 
+/**
+ * 事件出口。
+ *
+ * 本模块只保留内存滚动窗口,历史归档(日/月)由 metrics-history.ts 负责。
+ * 两者用回调解耦:metrics 不依赖存储,history 不侵入请求热路径的统计逻辑。
+ * 回调必须同步且不抛错(热路径调用),异步落盘由订阅方自行节流。
+ */
+export interface MetricsEventSink {
+  /** 一次代理请求完成(此时 token/credit 可能尚未回填) */
+  onRequest(record: RequestRecord): void;
+  /**
+   * 该请求的上游用量被补齐。token 与 credit 各自独立幂等:
+   * 同一次调用可能只带其中一个字段,重复调用不会重复上报。
+   */
+  onUsage(record: RequestRecord, delta: { promptTokens?: number; completionTokens?: number; credit?: number }): void;
+}
+
+let sink: MetricsEventSink | undefined;
+
+/** 安装/卸载事件出口(未安装时本模块退化为纯内存统计)。 */
+export function setMetricsSink(next?: MetricsEventSink): void {
+  sink = next;
+}
+
+/** 安全投递:订阅方的异常不能影响请求统计本身。 */
+function emit(fn: (target: MetricsEventSink) => void): void {
+  if (!sink) return;
+  try {
+    fn(sink);
+  } catch {
+    // 归档失败只影响历史视图,不影响实时统计
+  }
+}
+
 const MINUTE_MS = 60_000;
 const WINDOW_MINUTES = 60;
 const RECENT_MAX = 200;
@@ -215,6 +249,8 @@ export function recordRequest(record: RequestRecord): void {
   if (state.recent.length > RECENT_MAX) state.recent.length = RECENT_MAX;
 
   prune(record.at);
+
+  emit((target) => target.onRequest(record));
 }
 
 /**
@@ -231,14 +267,20 @@ export function attachTokenUsage(
   record: RequestRecord,
   usage: { promptTokens: number; completionTokens: number; credit?: number },
 ): void {
+  const delta: { promptTokens?: number; completionTokens?: number; credit?: number } = {};
+
   // 积分:独立回填。上游未上报时保持 undefined,便于界面区分「0 积分」与「未上报」。
   if (record.credit === undefined && typeof usage.credit === 'number') {
     record.credit = usage.credit;
     state.totals.credit += usage.credit;
     state.totals.creditReported += 1;
+    delta.credit = usage.credit;
   }
 
-  if (record.totalTokens !== undefined) return;
+  if (record.totalTokens !== undefined) {
+    if (delta.credit !== undefined) emit((target) => target.onUsage(record, delta));
+    return;
+  }
 
   const toCount = (value: number): number => {
     const n = Math.round(value);
@@ -256,9 +298,14 @@ export function attachTokenUsage(
   state.totals.completionTokens += completion;
   state.totals.tokenReported += 1;
 
+  delta.promptTokens = prompt;
+  delta.completionTokens = completion;
+
   // 桶可能尚未建立(流先于 recordRequest 结束)或已被 prune(超长流跨出窗口),
   // 两种情况都交给 addTokensToBucket 处理,不会重复累加。
   addTokensToBucket(record, total);
+
+  emit((target) => target.onUsage(record, delta));
 }
 
 /** 线性插值分位数(样本已排序) */
@@ -352,9 +399,18 @@ export function metricsSnapshot(now = Date.now()): MetricsSnapshot {
   };
 }
 
+/**
+ * 进程启动信息。
+ *
+ * 公开落地页只需要运行时长,不值得为它做一次完整的 metricsSnapshot
+ * (那会排序最多 2000 个延迟样本)。
+ */
+export function uptimeSnapshot(now = Date.now()): { startedAt: number; uptimeMs: number } {
+  return { startedAt: state.startedAt, uptimeMs: Math.max(0, now - state.startedAt) };
+}
+
 /** 清空统计(仅供测试)。 */
-export function resetMetrics(): void {
-  state.buckets.clear();
+export function resetMetrics(): void {  state.buckets.clear();
   state.recent.length = 0;
   state.latencies.length = 0;
   state.totals.total = 0;

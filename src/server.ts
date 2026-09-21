@@ -14,6 +14,7 @@
  */
 
 import { createNodeKv } from './node-kv';
+import { flushMetricsHistory, initMetricsHistory } from './metrics-history';
 import { performAutoCheckins, planNextCheckinRun } from './scheduled';
 import { installProcessGuards } from './process-guards';
 import worker from './index';
@@ -29,6 +30,10 @@ function buildNodeEnv(): Env {
   const env = process.env;
   const defaultData = nodePath().resolve(process.cwd(), 'data', 'codebuddy.db');
 
+  const kv = createNodeKv({ file: env.DATA_FILE || defaultData });
+  // 日/月归档复用同一份持久化存储;未接入时管理台会显示「归档未启用」
+  initMetricsHistory(kv);
+
   const nodeEnv: Env = {
     UPSTREAM_CHAT_COMPLETIONS_URL:
       env.UPSTREAM_CHAT_COMPLETIONS_URL || 'https://copilot.tencent.com/v2/chat/completions',
@@ -41,7 +46,7 @@ function buildNodeEnv(): Env {
     UPSTREAM_CONNECT_TIMEOUT_SECONDS: env.UPSTREAM_CONNECT_TIMEOUT_SECONDS || '30',
     CORS_ALLOW_ORIGINS: env.CORS_ALLOW_ORIGINS || '*',
     CORS_ALLOW_CREDENTIALS: env.CORS_ALLOW_CREDENTIALS || 'false',
-    CREDENTIALS_KV: createNodeKv({ file: env.DATA_FILE || defaultData }),
+    CREDENTIALS_KV: kv,
     ...(env.ADMIN_PASSWORD ? { ADMIN_PASSWORD: env.ADMIN_PASSWORD } : {}),
     ...(env.ADMIN_SESSION_SECRET ? { ADMIN_SESSION_SECRET: env.ADMIN_SESSION_SECRET } : {}),
     ...(env.ADMIN_COOKIE_SECURE ? { ADMIN_COOKIE_SECURE: env.ADMIN_COOKIE_SECURE } : {}),
@@ -253,6 +258,8 @@ export function startServer(opts: ServerOptions = {}): { server: HttpServer; env
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[codebuddy-gateway] ${signal} received, draining in-flight requests…`);
+    // 归档是节流落盘的,停机前补一次,避免丢掉最后 10 秒的日桶增量
+    void flushMetricsHistory().catch(() => undefined);
     server.close(() => process.exit(0));
     // 空闲的 keep-alive 连接会阻止 close 回调,主动断开
     server.closeIdleConnections?.();

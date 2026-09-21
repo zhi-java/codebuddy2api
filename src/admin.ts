@@ -24,6 +24,7 @@ import type { ClientKey, Credential, CredentialKind } from './types';
 import { Env, jsonResponse, fetchWithTimeout, resolveRateLimit } from './utils';
 import { checkRateLimit } from './rate-limiter';
 import { metricsSnapshot } from './metrics';
+import { historySnapshot, initMetricsHistory } from './metrics-history';
 import { logSnapshot, pushLog } from './logs';
 
 const SESSION_COOKIE = 'cb_admin';
@@ -275,6 +276,20 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
   // ── 实时请求监控统计 ──────────────────────────────────────
   if (path === '/admin/api/metrics' && request.method === 'GET') {
     return jsonResponse({ data: metricsSnapshot() }, env);
+  }
+
+  // ── 请求量的日/月归档(持久化,跨重启保留)─────────────────
+  if (path === '/admin/api/metrics/history' && request.method === 'GET') {
+    // 兜底接入:Node 入口已在启动时接好,其它运行时(或直接复用本模块的
+    // 测试)在这里按 env 惰性接入。同一存储重复调用是幂等的。
+    if (env.CREDENTIALS_KV) initMetricsHistory(env.CREDENTIALS_KV);
+
+    const url = new URL(request.url);
+    const snapshot = await historySnapshot({
+      days: Number(url.searchParams.get('days') ?? '30'),
+      months: Number(url.searchParams.get('months') ?? '12'),
+    });
+    return jsonResponse({ data: snapshot }, env);
   }
 
   // ── 运行日志(内存缓冲,新的在前;支持级别与关键词过滤) ──────
