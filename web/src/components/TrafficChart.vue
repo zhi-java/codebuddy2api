@@ -9,12 +9,15 @@
  *   - 悬停十字线 + 明细卡是真实运维台的标准读数方式，比纯静态图更有用。
  */
 import { computed, ref } from 'vue';
+import AppIcon from './AppIcon.vue';
 import { fmtHm } from '../format';
 import type { MinuteBucket } from '../types';
 
 const props = defineProps<{ series: MinuteBucket[] }>();
 
 const H = 168;
+/** 空态高度：不必为一个「暂无数据」占满整块图表区，留出空间给下方内容 */
+const EMPTY_H = 104;
 const hoverIndex = ref<number | null>(null);
 const trackRef = ref<HTMLElement | null>(null);
 
@@ -83,7 +86,13 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
 
 <template>
   <div class="wrap">
-    <div v-if="totalWindow === 0" class="empty">最近 60 分钟暂无请求</div>
+    <div v-if="totalWindow === 0" class="empty">
+      <AppIcon name="activity" :size="18" />
+      <div>
+        <div class="empty-title">最近 60 分钟暂无请求</div>
+        <div class="empty-hint">网关已就绪，客户端发起调用后这里会实时刷新</div>
+      </div>
+    </div>
     <template v-else>
       <div class="plot" ref="trackRef" @pointermove="onMove" @pointerleave="onLeave">
         <svg :viewBox="`0 0 1000 ${H}`" preserveAspectRatio="none" role="img" aria-label="最近 60 分钟请求量趋势">
@@ -227,10 +236,22 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
 }
 
 .empty {
-  height: v-bind('H + "px"');
-  display: grid;
-  place-items: center;
+  height: v-bind('EMPTY_H + "px"');
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   color: var(--text-3);
-  font-size: 12.5px;
+}
+
+.empty-title {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.empty-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
 }
 </style>

@@ -7,17 +7,25 @@
  * 这些值来自环境变量（Docker Compose），因此页面只读展示并提示改法。
  */
 import { computed, onMounted, ref } from 'vue';
-import { NButton, NCard, NTag, NTooltip, useMessage } from 'naive-ui';
+import { NButton, NCard, NSwitch, NTooltip, useMessage } from 'naive-ui';
 import AppIcon from '../components/AppIcon.vue';
 import PageHeader from '../components/PageHeader.vue';
+import { api, type DataResponse } from '../api';
 import { loadConfig, loadSettings, saveSettings, store } from '../store';
-import { fmtDuration } from '../format';
+import type { HistorySnapshot } from '../types';
 
 const message = useMessage();
 const saving = ref(false);
 const copyTarget = ref('');
+const archive = ref<HistorySnapshot | null>(null);
 
 const config = computed(() => store.config);
+
+/** 落盘与仅内存的数据边界：这张表决定了「容器重建后还剩什么」，值得写清楚 */
+const persisted = ['上游凭证（AES-GCM 加密）', '网关 Key（仅存哈希）', '网关设置', '日/月用量归档'];
+const inMemory = ['实时监控窗口（60 分钟）', '日志缓冲（最近 300 条）', '凭证冷却状态', '入口限流计数', '模型目录缓存'];
+
+const historyRetentionDays = computed(() => archive.value?.retentionDays ?? 400);
 
 /** 补签间隔文案，如「10 分钟、30 分钟、1 小时、2 小时」 */
 const catchupText = computed(() => {
@@ -111,43 +119,56 @@ const anthropicBase = window.location.origin;
 
 onMounted(async () => {
   await Promise.all([loadConfig(true), loadSettings(true)]);
+  try {
+    // 归档保留天数由后端决定，这里只展示实际值，不写死
+    const res = await api<DataResponse<HistorySnapshot>>('/admin/api/metrics/history', {
+      query: { days: 1, months: 1 },
+    });
+    archive.value = res.data;
+  } catch {
+    // 归档不可用不影响设置页其余内容
+  }
 });
 </script>
 
 <template>
-  <div class="page">
+  <div class="page stack">
     <PageHeader title="设置" desc="当前部署的运行参数（只读，来自环境变量）与会话操作" />
 
-    <div class="grid">
-      <NCard size="small" title="客户端接入地址">
-        <div class="base">
-          <div class="base-row">
-            <span class="k">OpenAI 兼容 Base URL</span>
-            <code class="mono">{{ gatewayBase }}</code>
-            <NButton size="tiny" quaternary @click="copy(gatewayBase, 'Base URL')">
-              <template #icon><AppIcon name="copy" :size="13" /></template>
-            </NButton>
-          </div>
-          <div class="base-row">
-            <span class="k">Anthropic Base URL</span>
-            <code class="mono">{{ anthropicBase }}</code>
-            <NButton size="tiny" quaternary @click="copy(anthropicBase, 'Anthropic URL')">
-              <template #icon><AppIcon name="copy" :size="13" /></template>
-            </NButton>
-          </div>
-          <div class="sub">
-            端点为 /v1/chat/completions、/v1/messages、/v1/responses；密钥在「API Keys」创建。
-          </div>
+    <!-- 接入地址是最常被抄走的信息，独占整行 -->
+    <NCard size="small" title="客户端接入地址">
+      <div class="base">
+        <div class="base-row">
+          <span class="k">OpenAI 兼容 Base URL</span>
+          <code class="mono">{{ gatewayBase }}</code>
+          <NButton size="tiny" quaternary @click="copy(gatewayBase, 'Base URL')">
+            <template #icon><AppIcon name="copy" :size="13" /></template>
+          </NButton>
         </div>
-      </NCard>
+        <div class="base-row">
+          <span class="k">Anthropic Base URL</span>
+          <code class="mono">{{ anthropicBase }}</code>
+          <NButton size="tiny" quaternary @click="copy(anthropicBase, 'Anthropic URL')">
+            <template #icon><AppIcon name="copy" :size="13" /></template>
+          </NButton>
+        </div>
+      </div>
+      <ul class="endpoints">
+        <li><b class="mono">POST /v1/chat/completions</b><span class="sub">OpenAI 兼容，Bearer 鉴权</span></li>
+        <li><b class="mono">POST /v1/messages</b><span class="sub">Anthropic 协议，x-api-key 鉴权</span></li>
+        <li><b class="mono">POST /v1/responses</b><span class="sub">OpenAI Responses，Bearer 鉴权</span></li>
+      </ul>
+      <div class="sub">密钥在「API Keys」创建；公开接入说明见 <a href="/" target="_blank" rel="noopener">首页</a>。</div>
+    </NCard>
 
+    <div class="grid">
       <NCard size="small" title="运行参数">
         <ul class="rows">
           <li v-for="row in rows" :key="row.label">
             <span class="k">
               {{ row.label }}
               <NTooltip v-if="row.hint" trigger="hover">
-                <template #trigger><AppIcon name="alert" :size="12" class="hint-ico" /></template>
+                <template #trigger><AppIcon name="help" :size="12" class="hint-ico" /></template>
                 {{ row.hint }}
               </NTooltip>
             </span>
@@ -171,7 +192,22 @@ onMounted(async () => {
         </div>
       </NCard>
 
-      <NCard size="small" title="会话与安全">
+      <NCard size="small" title="数据与留存">
+        <div class="sub retention-title">落盘保存（重启不丢）</div>
+        <ul class="tags">
+          <li v-for="item in persisted" :key="item" class="tag-item">{{ item }}</li>
+        </ul>
+        <div class="sub retention-title">仅存于进程内存（重启即清零）</div>
+        <ul class="tags">
+          <li v-for="item in inMemory" :key="item" class="tag-item muted">{{ item }}</li>
+        </ul>
+        <div class="sub" style="margin-top: 12px">
+          日志需要长期留存请以 <code class="mono">docker logs</code> 为准；
+          用量归档保留 {{ historyRetentionDays }} 天，可在「总览」按日/按月查看。
+        </div>
+      </NCard>
+
+      <NCard size="small" title="会话与签到">
         <div class="session">
           <div>
             <div class="session-title">管理员会话</div>
@@ -184,50 +220,21 @@ onMounted(async () => {
             退出登录
           </NButton>
         </div>
-        <div class="session" style="margin-top: 14px">
+
+        <div class="session" style="margin-top: 16px">
           <div>
             <div class="session-title">每日自动签到</div>
             <div class="sub">
-              开启后每天 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证执行签到；
+              开启后 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证执行签到；
               若有凭证未签成功，会按 {{ catchupText }} 自动补签（用尽后等次日主时点）。
             </div>
           </div>
-          <NTag :type="store.settings?.autoCheckin ? 'success' : 'default'" :bordered="false" size="small">
-            {{ store.settings?.autoCheckin ? '已开启' : '已关闭' }}
-          </NTag>
-        </div>
-        <div class="session-actions">
-          <NButton
-            size="small"
-            secondary
+          <NSwitch
+            :value="store.settings?.autoCheckin === true"
             :loading="saving"
-            @click="toggleAutoCheckin(!(store.settings?.autoCheckin === true))"
-          >
-            切换签到开关
-          </NButton>
-          <span class="sub">（也可在「上游凭证」页操作）</span>
+            @update:value="toggleAutoCheckin"
+          />
         </div>
-      </NCard>
-
-      <NCard size="small" title="进程内状态">
-        <div class="sub">
-          限流计数、凭证冷却、模型目录缓存、监控统计与日志缓冲都保存在进程内存中，容器重启即清零；
-          需要长期留存请以 <code class="mono">docker logs</code> 为准。
-        </div>
-        <ul class="rows" style="margin-top: 10px">
-          <li>
-            <span class="k">客户端 Key 数</span><b>{{ store.state?.counts.keys ?? 0 }}</b>
-          </li>
-          <li>
-            <span class="k">上游凭证数</span><b>{{ store.state?.counts.credentials ?? 0 }}</b>
-          </li>
-          <li>
-            <span class="k">健康凭证</span><b>{{ store.state?.counts.healthy ?? 0 }}</b>
-          </li>
-          <li>
-            <span class="k">服务已运行</span><b>{{ fmtDuration(Date.now() - (store.refreshedAt || Date.now())) }}</b>
-          </li>
-        </ul>
       </NCard>
     </div>
   </div>
@@ -270,6 +277,29 @@ onMounted(async () => {
   font-size: 12.5px;
 }
 
+/* 端点清单：路径是主体，鉴权方式作为副标题贴着它 */
+.endpoints {
+  list-style: none;
+  margin: 14px 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  background: var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.endpoints li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 12px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
 .rows {
   list-style: none;
   margin: 0;
@@ -309,6 +339,40 @@ onMounted(async () => {
   opacity: 0.6;
 }
 
+/* ── 数据留存 ── */
+.retention-title {
+  margin: 14px 0 7px;
+  font-weight: 550;
+}
+
+.retention-title:first-child {
+  margin-top: 0;
+}
+
+.tags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-item {
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+
+.tag-item.muted {
+  color: var(--text-3);
+  background: var(--surface-3);
+  border-color: var(--border-soft);
+}
+
 .session {
   display: flex;
   align-items: center;
@@ -319,13 +383,6 @@ onMounted(async () => {
 .session-title {
   font-weight: 600;
   margin-bottom: 2px;
-}
-
-.session-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
 }
 
 :deep(.mono) {

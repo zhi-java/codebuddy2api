@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * 控制台外壳：侧栏导航 + 顶栏（环境/自动刷新/主题/账号）+ 视图容器。
+ * 控制台外壳：侧栏导航 + 顶栏（全局状态 / 检索 / 数据新鲜度 / 主题 / 账号）+ 视图容器。
  *
- * 顶栏承担三件事，都是运维台的日常必需信息：
- *   1. 当前视图标题与说明（视图自带页头，这里只放全局状态）；
- *   2. 数据新鲜度（自动刷新开关 + 距上次刷新时间）；
- *   3. 主题与账号入口。
+ * 顶栏承担的是「全局」信息，视图自身的标题与操作留在各视图的 PageHeader 里，
+ * 两边不重复：左侧只放一处服务状态与存储后端，右侧是随时可用的全局控制。
+ *
+ * 响应式：窄屏自动收起侧栏（只留图标），顶栏隐藏检索文案与时间提示，
+ * 保证 375px 宽度下不出现横向滚动。
  */
 import { computed, h, onMounted, onUnmounted, ref } from 'vue';
 import {
@@ -20,7 +21,6 @@ import {
   NMessageProvider,
   NNotificationProvider,
   NSwitch,
-  NTag,
   NTooltip,
   darkTheme,
   dateZhCN,
@@ -76,23 +76,79 @@ const themeOptions: MenuOption[] = [
   { label: '浅色', key: 'light' },
 ];
 
+// ── 全局状态 ─────────────────────────────────────────────────────────────
+/**
+ * 服务健康度由凭证池推导，不额外发请求：
+ * 凭证池是网关能否向上游出网的单点，它正常即服务可用。
+ */
+const health = computed(() => {
+  const counts = store.state?.counts;
+  if (!counts || counts.credentials === 0) {
+    return { tone: 'idle', text: '未配置凭证' };
+  }
+  if (counts.healthy === counts.credentials) return { tone: 'ok', text: '运行正常' };
+  if (counts.healthy > 0) return { tone: 'warn', text: `凭证降级 ${counts.healthy}/${counts.credentials}` };
+  return { tone: 'bad', text: '无可用凭证' };
+});
+
+const storageText = computed(() =>
+  store.state?.storage === 'persistent' ? 'SQLite 持久化' : '内存存储（重启丢失）',
+);
+
 // ── 导航 ─────────────────────────────────────────────────────────────────
+const collapsed = ref(false);
+const paletteOpen = ref(false);
+
+/** 导航徽标：把「有多少东西要管」直接标在入口上，省一次点进去才知道 */
+const navBadges = computed<Record<string, number>>(() => {
+  const badges: Record<string, number> = {};
+  const counts = store.state?.counts;
+  if (counts) {
+    badges.credentials = counts.credentials;
+    badges.keys = counts.keys;
+  }
+  return badges;
+});
+
 const menuOptions = computed<MenuOption[]>(() => {
   const groups = new Map<string, MenuOption[]>();
   for (const item of ROUTES) {
-    const list = groups.get(item.group) ?? [];
-    list.push({
+    const badge = navBadges.value[item.name];
+    const children = groups.get(item.group) ?? [];
+    children.push({
       label: item.label,
       key: item.name,
       icon: () => h(AppIcon, { name: item.icon, size: 16 }),
+      // 收起态下放徽标会挤成一团，只在展开时渲染
+      ...(badge && !collapsed.value
+        ? { extra: () => h('span', { class: 'nav-badge tnum' }, String(badge)) }
+        : {}),
     });
-    groups.set(item.group, list);
+    groups.set(item.group, children);
   }
   return [...groups.entries()].map(([group, children]) => ({ type: 'group', label: group, key: group, children }));
 });
 
-const collapsed = ref(false);
-const paletteOpen = ref(false);
+/** 窄屏自动收起侧栏；用户手动展开后不再干预 */
+let autoCollapsed = false;
+function syncCollapsed(): void {
+  const narrow = window.innerWidth < 960;
+  if (narrow) {
+    if (!collapsed.value) {
+      collapsed.value = true;
+      autoCollapsed = true;
+    }
+  } else if (autoCollapsed) {
+    collapsed.value = false;
+    autoCollapsed = false;
+  }
+}
+
+function onSelect(key: string): void {
+  navigate(key);
+  // 窄屏下选完即收起，避免遮住内容
+  if (window.innerWidth < 960) collapsed.value = true;
+}
 
 // 顶栏的「距上次刷新」文案：只在最近 1 分钟内做秒级提示,更早交给自动刷新
 const refreshHint = ref('');
@@ -118,12 +174,15 @@ async function logout(): Promise<void> {
 
 const accountOptions: MenuOption[] = [
   { label: '查看模型目录', key: 'models' },
+  { label: '查看公开首页', key: 'landing' },
+  { type: 'divider', key: 'd1' },
   { label: '退出登录', key: 'logout' },
 ];
 
 function onAccount(key: string): void {
   if (key === 'logout') void logout();
   else if (key === 'models') window.open('/v1/models', '_blank', 'noopener');
+  else if (key === 'landing') window.open('/', '_blank', 'noopener');
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -140,6 +199,8 @@ onMounted(async () => {
   stopRouter = startRouter();
   stopAutoRefresh = startAutoRefresh();
   window.addEventListener('keydown', onKeydown);
+  window.addEventListener('resize', syncCollapsed);
+  syncCollapsed();
   hintTimer = window.setInterval(updateRefreshHint, 1000);
   await refreshAll();
   updateRefreshHint();
@@ -149,9 +210,9 @@ onUnmounted(() => {
   stopRouter?.();
   stopAutoRefresh?.();
   window.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('resize', syncCollapsed);
   if (hintTimer) window.clearInterval(hintTimer);
 });
-
 </script>
 
 <template>
@@ -164,64 +225,71 @@ onUnmounted(() => {
               bordered
               collapse-mode="width"
               :collapsed-width="58"
-              :width="222"
+              :width="224"
               :collapsed="collapsed"
               show-trigger
               @collapse="collapsed = true"
               @expand="collapsed = false"
             >
-              <div class="brand">
-                <div class="brand-logo" aria-hidden="true">
-                  <AppIcon name="shield" :size="16" />
-                </div>
-                <div v-if="!collapsed" class="brand-text">
-                  <div class="brand-name">CodeBuddy Gateway</div>
-                  <div class="brand-sub">Production console</div>
-                </div>
-              </div>
-
-              <NMenu
-                :value="route"
-                :collapsed="collapsed"
-                :collapsed-width="58"
-                :collapsed-icon-size="18"
-                :options="menuOptions"
-                :indent="16"
-                @update:value="(value: string) => navigate(value)"
-              />
-
-              <div class="sider-foot">
-                <div v-if="!collapsed" class="env" title="凭证存储后端">
-                  <span class="storage">
-                    <i class="dot" :class="{ mem: store.state?.storage !== 'persistent' }" />
-                    {{ store.state?.storage === 'persistent' ? 'SQLite 持久化' : '内存存储' }}
+              <div class="sider">
+                <a class="brand" href="/" target="_blank" rel="noopener" title="打开公开首页">
+                  <span class="brand-logo" aria-hidden="true">
+                    <AppIcon name="shield" :size="16" />
                   </span>
+                  <span v-if="!collapsed" class="brand-text">
+                    <b>CodeBuddy Gateway</b>
+                    <i>Production console</i>
+                  </span>
+                </a>
+
+                <NMenu
+                  :value="route"
+                  :collapsed="collapsed"
+                  :collapsed-width="58"
+                  :collapsed-icon-size="18"
+                  :options="menuOptions"
+                  :indent="16"
+                  @update:value="onSelect"
+                />
+
+                <div class="sider-foot">
+                  <NTooltip :disabled="!collapsed" placement="right">
+                    <template #trigger>
+                      <div class="storage" :class="{ mem: store.state?.storage !== 'persistent' }">
+                        <i class="dot" />
+                        <span v-if="!collapsed">{{ store.state?.storage === 'persistent' ? 'SQLite' : '内存' }}</span>
+                      </div>
+                    </template>
+                    {{ storageText }}
+                  </NTooltip>
+                  <NButton quaternary size="small" block @click="logout">
+                    <template #icon><AppIcon name="logout" :size="15" /></template>
+                    <span v-if="!collapsed">退出登录</span>
+                  </NButton>
                 </div>
-                <NButton quaternary block size="small" @click="logout">
-                  <template #icon><AppIcon name="logout" :size="15" /></template>
-                  <span v-if="!collapsed">退出登录</span>
-                </NButton>
               </div>
             </NLayoutSider>
 
             <NLayoutContent content-style="height: 100%; overflow: auto">
               <div class="topbar">
-                <button class="palette-btn" @click="paletteOpen = true">
-                  <AppIcon name="search" :size="14" />
-                  <span>搜索或跳转</span>
-                  <kbd>Ctrl K</kbd>
-                </button>
+                <div class="status" :class="health.tone">
+                  <i class="status-dot" />
+                  <span class="status-text">{{ health.text }}</span>
+                  <span v-if="store.state" class="status-sub">{{ storageText }}</span>
+                </div>
 
                 <div class="topbar-right">
+                  <button class="palette-btn" @click="paletteOpen = true">
+                    <AppIcon name="search" :size="14" />
+                    <span>搜索或跳转</span>
+                    <kbd>Ctrl K</kbd>
+                  </button>
+
                   <NTooltip>
                     <template #trigger>
                       <div class="refresh">
-                        <NSwitch
-                          size="small"
-                          :value="autoRefresh"
-                          @update:value="setAutoRefresh"
-                        />
-                        <span class="hint">{{ refreshHint }}</span>
+                        <NSwitch size="small" :value="autoRefresh" @update:value="setAutoRefresh" />
+                        <span class="hint tnum">{{ refreshHint }}</span>
                       </div>
                     </template>
                     开启后每 10 秒自动刷新，页面切到后台时暂停
@@ -237,13 +305,13 @@ onUnmounted(() => {
                   </NTooltip>
 
                   <NDropdown :options="themeOptions" :value="themeMode" @select="setTheme">
-                    <NButton quaternary size="small">
+                    <NButton quaternary size="small" title="主题">
                       <template #icon><AppIcon :name="isDark ? 'moon' : 'sun'" :size="15" /></template>
                     </NButton>
                   </NDropdown>
 
                   <NDropdown :options="accountOptions" @select="onAccount">
-                    <NButton quaternary size="small">
+                    <NButton quaternary size="small" title="账号与入口">
                       <template #icon><AppIcon name="server" :size="15" /></template>
                     </NButton>
                   </NDropdown>
@@ -264,11 +332,19 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.sider {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 16px 14px;
+  padding: 14px 16px 12px;
+  text-decoration: none;
+  color: inherit;
 }
 
 .brand-logo {
@@ -283,56 +359,68 @@ onUnmounted(() => {
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 8px 18px rgba(22, 163, 74, 0.25);
 }
 
-.brand-name {
+.brand-text {
+  min-width: 0;
+}
+
+.brand-text b {
+  display: block;
   font-size: 13px;
   font-weight: 650;
   letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
-.brand-sub {
-  font-size: 10.5px;
+.brand-text i {
+  display: block;
+  font-size: 10px;
+  font-style: normal;
   color: var(--text-3);
   letter-spacing: 0.08em;
-  font-variant: small-caps;
+  text-transform: uppercase;
+}
+
+:deep(.nav-badge) {
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--surface-3);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 8px;
+  font-weight: 550;
 }
 
 .sider-foot {
-  position: absolute;
-  inset: auto 0 0 0;
+  margin-top: auto;
   padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   border-top: 1px solid var(--border-soft);
 }
 
-.env {
+.storage {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 4px;
-}
-
-.storage {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
-  font-size: 11px;
+  padding: 3px 6px;
+  font-size: 11.5px;
   color: var(--text-3);
 }
 
-.dot {
+.storage .dot {
   width: 6px;
   height: 6px;
+  flex: none;
   border-radius: 50%;
   background: var(--accent);
 }
 
-.dot.mem {
+.storage.mem .dot {
   background: var(--warn);
 }
 
+/* ── 顶栏 ── */
 .topbar {
   position: sticky;
   top: 0;
@@ -341,10 +429,69 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 20px;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px);
+  padding: 9px 20px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border-soft);
+}
+
+/* 全局状态：一处说清服务是否可用 + 数据落在哪里 */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.status.ok .status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.status.warn .status-dot {
+  background: var(--warn);
+  box-shadow: 0 0 0 4px var(--warn-soft);
+}
+
+.status.bad .status-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px var(--danger-soft);
+}
+
+.status-text {
+  font-weight: 550;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.status-sub {
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-sub::before {
+  content: '·';
+  margin-right: 8px;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
 
 .palette-btn {
@@ -352,8 +499,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  min-width: 220px;
-  border-radius: 8px;
+  min-width: 216px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-3);
@@ -375,12 +522,6 @@ onUnmounted(() => {
   padding: 0 5px;
 }
 
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .refresh {
   display: flex;
   align-items: center;
@@ -391,25 +532,39 @@ onUnmounted(() => {
 .hint {
   font-size: 11.5px;
   color: var(--text-3);
-  font-variant-numeric: tabular-nums;
   min-width: 76px;
 }
 
 .content {
-  padding: 20px 22px 48px;
+  padding: 20px 22px 56px;
 }
 
-@media (max-width: 720px) {
-  .content {
-    padding: 16px 14px 40px;
+@media (max-width: 960px) {
+  .status-sub {
+    display: none;
   }
 
   .palette-btn {
     min-width: 0;
   }
 
-  .palette-btn span {
+  .palette-btn span,
+  .palette-btn kbd {
     display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 8px 14px;
+  }
+
+  .hint {
+    display: none;
+  }
+
+  .content {
+    padding: 14px 14px 40px;
   }
 }
 </style>

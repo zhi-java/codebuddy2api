@@ -87,6 +87,64 @@ export function usageNum(usage: Record<string, unknown> | undefined, key: string
   return typeof value === 'number' ? value : undefined;
 }
 
+// ── 日/月归档格式化 ───────────────────────────────────────────────────────
+
+/** `YYYY-MM-DD` → `09-21`（图表轴用，短） */
+export function fmtDayShort(day: string): string {
+  return day.length >= 10 ? day.slice(5) : day;
+}
+
+/** `YYYY-MM-DD` → `9月21日`（表格与提示用） */
+export function fmtDayLabel(day: string): string {
+  if (day.length < 10) return day;
+  return `${Number(day.slice(5, 7))}月${Number(day.slice(8, 10))}日`;
+}
+
+/** `YYYY-MM` → `26年9月`（图表轴用，短） */
+export function fmtMonthShort(month: string): string {
+  if (month.length < 7) return month;
+  return `${month.slice(2, 4)}年${Number(month.slice(5, 7))}月`;
+}
+
+/** `YYYY-MM` → `2026年9月`（表格用） */
+export function fmtMonthLabel(month: string): string {
+  if (month.length < 7) return month;
+  return `${month.slice(0, 4)}年${Number(month.slice(5, 7))}月`;
+}
+
+/** 占比：0 分母返回 0，避免出现 NaN% */
+export function rate(part: number, whole: number): number {
+  if (!whole) return 0;
+  return Math.round((part / whole) * 1000) / 10;
+}
+
+/** 成功率文案；无请求时显示 — 而不是 0% */
+export function fmtRate(part: number, whole: number): string {
+  if (!whole) return '—';
+  return `${rate(part, whole)}%`;
+}
+
+export interface Delta {
+  /** 相对上一周期的变化率（%），上一周期为 0 时无意义 → null */
+  percent: number | null;
+  /** 绝对差值 */
+  diff: number;
+  direction: 'up' | 'down' | 'flat';
+}
+
+/**
+ * 环比上一个周期。
+ *
+ * 上一周期为 0 时不给百分比（除以 0 会得到 Infinity，展示成「+∞%」毫无意义），
+ * 只保留绝对差值，由调用方决定文案。
+ */
+export function delta(current: number, previous: number): Delta {
+  const diff = current - previous;
+  const direction: Delta['direction'] = diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat';
+  if (previous <= 0) return { percent: null, diff, direction };
+  return { percent: Math.round((diff / previous) * 1000) / 10, diff, direction };
+}
+
 export const KIND_NAME: Record<string, string> = {
   ck_apikey: '控制台 Key',
   cli_oauth: 'CLI OAuth',

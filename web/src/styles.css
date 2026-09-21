@@ -1,9 +1,12 @@
 /**
- * 设计令牌（与 design-system/codebuddy-gateway/MASTER.md 对齐）。
+ * 设计令牌与页面级基元（与 design-system/codebuddy-gateway/MASTER.md 对齐）。
  *
  * 深色优先：默认即深色，浅色作为系统偏好例外。
- * 组件外观由 Naive UI 主题接管，这里只定义页面级底色、字体与语义色变量，
- * 供自绘图表、代码块等无法走主题的场景使用。
+ * 组件外观由 Naive UI 主题接管，这里只定义页面级底色、字体、语义色与共享布局基元，
+ * 供自绘图表、卡片骨架等无法走主题的场景使用。
+ *
+ * 对比度：--text-3 是提示类文本的主力色，深/浅两套都按 WCAG AA 4.5:1 选定
+ * （原来的 #64748b / #94a3b8 在各自底色上只有 3.8:1 与 2.4:1）。
  */
 
 :root {
@@ -12,17 +15,19 @@
   --surface: #0f172a;
   --surface-2: #1e293b;
   --surface-3: #1a1e2f;
+  --surface-hover: #16203a;
   --border: #334155;
   --border-soft: #1e293b;
 
   /* 文本 */
   --text: #f8fafc;
   --text-2: #94a3b8;
-  --text-3: #64748b;
+  --text-3: #8494ab;
 
   /* 语义色 */
   --accent: #22c55e;
   --accent-soft: rgba(34, 197, 94, 0.14);
+  --accent-line: rgba(34, 197, 94, 0.38);
   --danger: #ef4444;
   --danger-soft: rgba(239, 68, 68, 0.14);
   --warn: #f59e0b;
@@ -34,7 +39,14 @@
   --chart-bar: rgba(34, 197, 94, 0.35);
   --chart-bar-strong: rgba(34, 197, 94, 0.7);
   --chart-error: #ef4444;
+  --chart-token: rgba(56, 189, 248, 0.7);
   --chart-grid: rgba(148, 163, 184, 0.16);
+
+  /* 形状与纵深 */
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 18px 40px -24px rgba(2, 6, 23, 0.9);
 
   /* 动效 */
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -49,13 +61,15 @@
     --surface: #ffffff;
     --surface-2: #f1f5f9;
     --surface-3: #eef2f7;
+    --surface-hover: #f1f5f9;
     --border: #cbd5e1;
     --border-soft: #e2e8f0;
     --text: #0f172a;
     --text-2: #475569;
-    --text-3: #94a3b8;
+    --text-3: #64748b;
     --accent: #16a34a;
     --accent-soft: #dcfce7;
+    --accent-line: rgba(22, 163, 74, 0.4);
     --danger: #dc2626;
     --danger-soft: #fee2e2;
     --warn: #b45309;
@@ -65,7 +79,9 @@
     --chart-bar: rgba(22, 163, 74, 0.35);
     --chart-bar-strong: rgba(22, 163, 74, 0.75);
     --chart-error: #dc2626;
+    --chart-token: rgba(2, 132, 199, 0.7);
     --chart-grid: rgba(100, 116, 139, 0.2);
+    --shadow: 0 18px 40px -26px rgba(15, 23, 42, 0.3);
     color-scheme: light;
   }
 }
@@ -104,6 +120,14 @@ a,
   cursor: pointer;
 }
 
+/* 键盘可达性：统一可见焦点环（不影响鼠标操作） */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── 文本工具类 ─────────────────────────────────────────────────────────── */
+
 .mono {
   font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
   font-variant-ligatures: none;
@@ -115,10 +139,116 @@ a,
   font-size: 12px;
 }
 
+.good {
+  color: var(--accent);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.bad {
+  color: var(--danger);
+}
+
+/* 数字对齐：KPI、表格数值列 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 布局基元 ───────────────────────────────────────────────────────────── */
+
 /* 页面级滚动容器 */
 .page {
   max-width: 1360px;
   margin: 0 auto;
+}
+
+/* 纵向节奏：视图内部按区块堆叠时统一用 16px 间距 */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 自适应栅格：卡片组、双栏区块 */
+.grid-auto {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  align-items: start;
+}
+
+/* 工具条：搜索框 + 筛选 + 批量操作 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ── 面板 ───────────────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.panel-head.plain {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.panel-head-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 窄屏下面板头的操作区独占一行，内部输入框拉满——这是面板头的布局职责，
+   放在全局定义里，各视图不必重复声明 */
+@media (max-width: 900px) {
+  .panel-head-extra {
+    width: 100%;
+  }
+
+  .panel-head-extra .n-input {
+    width: 100% !important;
+  }
+}
+
+.panel-body {
+  padding: 14px 16px 16px;
+}
+
+/* 面板内的分区说明：紧跟在 panel-head 之后时贴齐左侧 */
+.panel-note {
+  padding: 0 16px 12px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 @media (prefers-reduced-motion: reduce) {

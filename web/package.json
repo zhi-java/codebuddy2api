@@ -6,9 +6,11 @@
   "description": "CodeBuddy Gateway 管理控制台（Vue 3 + Naive UI + Vite）",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/check-style-collisions.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "check:styles": "node scripts/check-style-collisions.mjs",
+    "typecheck": "vue-tsc --noEmit && node scripts/check-style-collisions.mjs"
   },
   "dependencies": {
     "naive-ui": "^2.40.1",

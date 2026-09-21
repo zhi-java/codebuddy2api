@@ -20,6 +20,7 @@ import {
   NFormItem,
   NInput,
   NModal,
+  NPopover,
   NProgress,
   NSelect,
   NSpace,
@@ -42,6 +43,9 @@ import type { CheckinStatus, CredentialSummary, CredentialStatus, QuotaInfo } fr
 
 const message = useMessage();
 const dialog = useDialog();
+
+/** 主签到时点（scheduled.ts 的 UTC 03:17），同时标出北京时间便于国内运维对照 */
+const CHECKIN_TIME = 'UTC 03:17（北京时间 11:17）';
 
 const keyword = ref('');
 const statusFilter = ref<CredentialStatus | 'all'>('all');
@@ -397,7 +401,7 @@ async function toggleAutoCheckin(value: boolean): Promise<void> {
   savingCheckin.value = true;
   try {
     await saveSettings({ autoCheckin: value });
-    message.success(value ? '已开启自动签到（每日 11:17）' : '已关闭自动签到');
+    message.success(value ? `已开启自动签到（${CHECKIN_TIME}）` : '已关闭自动签到');
     // 开关只控制是否自动执行；活动是否开放由上游按期下发，不在此处判断
   } catch (err) {
     autoCheckin.value = !value;
@@ -417,7 +421,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page stack">
     <PageHeader title="上游凭证" desc="管理 CodeBuddy 上游账号凭证；网关按健康度调度，失败自动切换">
       <NButton secondary :loading="store.loading" @click="refreshCredentials">
         <template #icon><AppIcon name="refresh" :size="15" /></template>
@@ -429,48 +433,58 @@ onMounted(async () => {
       </NButton>
     </PageHeader>
 
+    <!-- 状态摘要 chips：既是统计也是过滤器 -->
     <div class="summary">
       <button
         v-for="item in summary"
         :key="item.key"
         class="chip"
         :class="{ active: statusFilter === item.key }"
+        :aria-pressed="statusFilter === item.key"
         @click="statusFilter = item.key"
       >
         <span class="chip-label">{{ item.label }}</span>
-        <span class="chip-value">{{ item.value }}</span>
+        <span class="chip-value tnum">{{ item.value }}</span>
       </button>
     </div>
 
-    <NCard size="small" class="checkin">
-      <div class="checkin-row">
-        <div>
-          <div class="checkin-title">每日自动签到</div>
-          <div class="sub">
-            每天 11:17 由网关对全部启用凭证执行签到（Buddy 加油站，每日 100 credits），未签成功的会
-            自动补签，避免断签。活动按期开放，当前期次与剩余天数可在行内「签到状态」查看；
-            关闭后仅保留行内「立即签到」按钮。
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title">
+          凭证池
+          <span class="sub">共 {{ filtered.length }} 个</span>
+        </div>
+
+        <div class="panel-head-extra">
+          <NInput v-model:value="keyword" placeholder="搜索凭证名称或 ID" clearable size="small" style="width: 220px">
+            <template #prefix><AppIcon name="search" :size="14" /></template>
+          </NInput>
+
+          <template v-if="selected.length > 0">
+            <span class="sub">已选 {{ selected.length }} 个</span>
+            <NButton size="tiny" secondary @click="batchTest">批量测试</NButton>
+            <NButton size="tiny" secondary @click="batchToggle(true)">启用</NButton>
+            <NButton size="tiny" secondary @click="batchToggle(false)">停用</NButton>
+            <NButton size="tiny" quaternary @click="selected = []">取消</NButton>
+          </template>
+
+          <span class="divider" />
+
+          <div class="checkin-toggle">
+            <span class="checkin-label">每日自动签到</span>
+            <NPopover trigger="hover" placement="bottom-end" style="max-width: 320px">
+              <template #trigger>
+                <AppIcon name="help" :size="14" class="help-ico" />
+              </template>
+              每天 {{ CHECKIN_TIME }} 由网关对全部启用凭证执行签到（Buddy 加油站，每日 100 credits），
+              未签成功的会自动补签，避免断签。活动按期开放，当前期次与剩余天数可在行内「签到状态」查看；
+              关闭后仅保留行内「立即签到」按钮。
+            </NPopover>
+            <NSwitch size="small" :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
           </div>
         </div>
-        <NSwitch :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
       </div>
-    </NCard>
 
-    <div class="toolbar">
-      <NInput v-model:value="keyword" placeholder="搜索凭证名称或 ID" clearable style="max-width: 320px">
-        <template #prefix><AppIcon name="search" :size="14" /></template>
-      </NInput>
-      <template v-if="selected.length > 0">
-        <span class="sub">已选 {{ selected.length }} 个</span>
-        <NButton size="small" secondary @click="batchTest">批量测试</NButton>
-        <NButton size="small" secondary @click="batchToggle(true)">批量启用</NButton>
-        <NButton size="small" secondary @click="batchToggle(false)">批量停用</NButton>
-        <NButton size="small" quaternary @click="selected = []">取消选择</NButton>
-      </template>
-      <span v-else class="sub">共 {{ filtered.length }} 个凭证</span>
-    </div>
-
-    <NCard size="small">
       <NDataTable
         v-model:checked-row-keys="selected"
         :columns="columns"
@@ -493,7 +507,7 @@ onMounted(async () => {
           </EmptyState>
         </template>
       </NDataTable>
-    </NCard>
+    </section>
 
     <!-- 新增凭证 -->
     <NModal
@@ -633,7 +647,6 @@ onMounted(async () => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
 }
 
 .chip {
@@ -662,32 +675,30 @@ onMounted(async () => {
 }
 
 .chip-value {
-  font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
 
-.checkin {
-  margin-bottom: 14px;
+/* 面板头里的次要分隔：把「筛选/批量」与「签到开关」在视觉上分开 */
+.divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-soft);
 }
 
-.checkin-row {
-  display: flex;
+.checkin-toggle {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 8px;
 }
 
-.checkin-title {
-  font-weight: 600;
-  margin-bottom: 2px;
+.checkin-label {
+  font-size: 12.5px;
+  color: var(--text-2);
 }
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
+.help-ico {
+  color: var(--text-3);
+  cursor: help;
 }
 
 .bad {

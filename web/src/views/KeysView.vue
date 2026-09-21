@@ -10,10 +10,8 @@
 import { computed, h, onMounted, ref, watch } from 'vue';
 import {
   NButton,
-  NCard,
   NCheckbox,
   NDataTable,
-  NEmpty,
   NForm,
   NFormItem,
   NInput,
@@ -21,7 +19,6 @@ import {
   NSelect,
   NSpace,
   NTag,
-  NTooltip,
   useDialog,
   useMessage,
   type DataTableColumns,
@@ -317,7 +314,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page stack">
     <PageHeader title="API Keys" desc="客户端持网关 Key 调用；上游凭证由网关统一调度与刷新">
       <NButton secondary :loading="store.loading" @click="refreshKeys">
         <template #icon><AppIcon name="refresh" :size="15" /></template>
@@ -329,14 +326,19 @@ onMounted(() => {
       </NButton>
     </PageHeader>
 
-    <div class="toolbar">
-      <NInput v-model:value="keyword" placeholder="搜索 Key 名称或 ID" clearable style="max-width: 320px">
-        <template #prefix><AppIcon name="search" :size="14" /></template>
-      </NInput>
-      <span class="sub">共 {{ filtered.length }} 个 Key</span>
-    </div>
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title">
+          客户端 Key
+          <span class="sub">共 {{ filtered.length }} 个</span>
+        </div>
+        <div class="panel-head-extra">
+          <NInput v-model:value="keyword" placeholder="搜索 Key 名称或 ID" clearable size="small" style="width: 240px">
+            <template #prefix><AppIcon name="search" :size="14" /></template>
+          </NInput>
+        </div>
+      </div>
 
-    <NCard size="small">
       <NDataTable
         :columns="columns"
         :data="filtered"
@@ -357,7 +359,7 @@ onMounted(() => {
           </EmptyState>
         </template>
       </NDataTable>
-    </NCard>
+    </section>
 
     <!-- 创建 Key -->
     <NModal
@@ -513,13 +515,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
 .cred-list {
   display: flex;
   flex-direction: column;

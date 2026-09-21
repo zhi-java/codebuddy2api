@@ -3,6 +3,7 @@
  *
  * 深色为默认（MASTER.md：Dark Mode Primary，Light 仅作例外），
  * 语义色与自绘图表共用同一组变量，保证视觉一致。
+ * 对比度口径与 styles.css 保持一致：--text-3 两套都按 AA 4.5:1 选定。
  */
 
 import { darkTheme, type GlobalThemeOverrides } from 'naive-ui';
@@ -17,9 +18,10 @@ const dark = {
   borderSoft: '#1e293b',
   text: '#f8fafc',
   text2: '#94a3b8',
-  text3: '#64748b',
+  text3: '#8494ab',
   accent: '#22c55e',
   accentHover: '#4ade80',
+  accentInk: '#052e16',
   danger: '#ef4444',
   warn: '#f59e0b',
   info: '#38bdf8',
@@ -35,9 +37,10 @@ const light = {
   borderSoft: '#e2e8f0',
   text: '#0f172a',
   text2: '#475569',
-  text3: '#94a3b8',
+  text3: '#64748b',
   accent: '#16a34a',
   accentHover: '#15803d',
+  accentInk: '#ffffff',
   danger: '#dc2626',
   warn: '#b45309',
   info: '#0284c7',
@@ -88,6 +91,8 @@ function overrides(t: typeof dark): GlobalThemeOverrides {
       borderColor: t.borderSoft,
       color: t.surface,
       paddingMedium: '16px 18px',
+      titleFontSizeMedium: '13.5px',
+      titleFontWeight: '600',
     },
     DataTable: {
       thColor: t.surface,
@@ -114,6 +119,7 @@ function overrides(t: typeof dark): GlobalThemeOverrides {
       itemIconColorActiveHover: t.accent,
       itemHeight: '36px',
       borderRadius: '7px',
+      groupTextColor: t.text3,
     },
     Button: {
       textColorGhost: t.text2,
@@ -139,6 +145,24 @@ function overrides(t: typeof dark): GlobalThemeOverrides {
     Statistic: {
       labelTextColor: t.text3,
       valueTextColor: t.text,
+    },
+    Drawer: {
+      color: t.surface,
+      titleFontSize: '15px',
+      titleFontWeight: '600',
+    },
+    Modal: {
+      color: t.surface,
+      titleFontSize: '15px',
+      titleFontWeight: '600',
+    },
+    Progress: {
+      railColor: t.inset,
+    },
+    Tooltip: {
+      color: t.surfaceHover,
+      textColor: t.text,
+      padding: '6px 10px',
     },
   };
 }

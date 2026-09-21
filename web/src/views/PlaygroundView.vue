@@ -141,7 +141,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page stack">
     <PageHeader title="试跑" desc="用真实凭证流式对话，验证连通性、思考输出与首字延迟">
       <NButton secondary :disabled="messages.length === 0" @click="clear">
         <template #icon><AppIcon name="trash" :size="15" /></template>
@@ -271,19 +271,43 @@ onMounted(async () => {
   gap: 10px;
 }
 
+/*
+ * 对话区撑满视口剩余高度，输入框固定在底部：
+ * 这是聊天类界面的主流行为，也让「停止/发送」始终在拇指可及处。
+ * 减去的是顶栏 + 内容内边距 + 页头的高度。
+ */
 .chat {
-  min-height: 560px;
   display: flex;
   flex-direction: column;
+  height: calc(100vh - 208px);
+  min-height: 460px;
+}
+
+.chat :deep(.n-card__content) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .stream {
-  max-height: 460px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding-right: 4px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+@media (max-width: 1020px) {
+  .chat {
+    height: auto;
+  }
+
+  .stream {
+    max-height: 60vh;
+  }
 }
 
 .msg-head {

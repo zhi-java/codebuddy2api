@@ -120,6 +120,61 @@ export interface MetricsSnapshot {
   recentErrors: RequestRecord[];
 }
 
+/** 日/月归档共用的可加指标 */
+export interface MetricTotals {
+  total: number;
+  success: number;
+  error: number;
+  /** 请求耗时总和,除以 total 即平均耗时 */
+  durationSumMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** 上游实报的积分消耗合计 */
+  credit: number;
+}
+
+/** 单日聚合(服务器本地时区自然日,持久化) */
+export interface DayBucket extends MetricTotals {
+  /** YYYY-MM-DD */
+  day: string;
+}
+
+/** 单月聚合(由日桶派生) */
+export interface MonthBucket extends MetricTotals {
+  /** YYYY-MM */
+  month: string;
+}
+
+/** 日/月归档快照 */
+export interface HistorySnapshot {
+  /** 是否已接入持久化存储(内存存储时为 false) */
+  enabled: boolean;
+  /** 日归档保留天数 */
+  retentionDays: number;
+  /** 按日序列,升序,缺失日补零 */
+  days: DayBucket[];
+  /** 按月序列,升序,缺失月补零 */
+  months: MonthBucket[];
+}
+
+/** 趋势图的一个数据点(日/月归档归一化后的视图模型) */
+export interface TrendPoint {
+  /** 唯一键(日期或月份) */
+  key: string;
+  /** 轴标签 */
+  label: string;
+  /** 完整标题(提示卡里用) */
+  title: string;
+  total: number;
+  success: number;
+  error: number;
+  tokens: number;
+  credit: number;
+}
+
+/** 趋势图可切换的度量 */
+export type TrendMetric = 'requests' | 'tokens' | 'credit';
+
 export type LogLevel = 'info' | 'warn' | 'error';
 
 export interface LogEntry {

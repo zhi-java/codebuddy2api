@@ -7,13 +7,17 @@
 
 import { ref } from 'vue';
 
+/**
+ * 导航分为两组，各 3 项：按「日常在看」与「一次性配好」切分。
+ * 原先的 4 组每组只有 1–2 项，侧栏被组标题切得零碎，反而看不清结构。
+ */
 export const ROUTES = [
-  { name: 'overview', label: '总览', icon: 'overview', group: '观测' },
-  { name: 'credentials', label: '上游凭证', icon: 'credentials', group: '资源' },
-  { name: 'keys', label: 'API Keys', icon: 'keys', group: '资源' },
-  { name: 'playground', label: '试跑', icon: 'playground', group: '调试' },
-  { name: 'logs', label: '日志', icon: 'logs', group: '调试' },
-  { name: 'settings', label: '设置', icon: 'settings', group: '系统' },
+  { name: 'overview', label: '总览', icon: 'overview', group: '运行' },
+  { name: 'playground', label: '试跑', icon: 'playground', group: '运行' },
+  { name: 'logs', label: '日志', icon: 'logs', group: '运行' },
+  { name: 'credentials', label: '上游凭证', icon: 'credentials', group: '配置' },
+  { name: 'keys', label: 'API Keys', icon: 'keys', group: '配置' },
+  { name: 'settings', label: '设置', icon: 'settings', group: '配置' },
 ] as const;
 
 export type RouteName = (typeof ROUTES)[number]['name'];

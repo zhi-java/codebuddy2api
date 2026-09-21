@@ -12,17 +12,16 @@
 import { computed, h, onMounted, ref, watch } from 'vue';
 import {
   NButton,
-  NCard,
   NCheckboxGroup,
   NCheckbox,
   NDataTable,
-  NEmpty,
   NInput,
   NTag,
   useMessage,
   type DataTableColumns,
 } from 'naive-ui';
 import AppIcon from '../components/AppIcon.vue';
+import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
@@ -149,7 +148,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page stack">
     <PageHeader title="日志" desc="网关运行事件：上游失败、凭证切换、定时签到等（进程内最近 300 条）">
       <NButton :secondary="!paused" :type="paused ? 'warning' : 'default'" @click="togglePause">
         <template #icon><AppIcon :name="paused ? 'play' : 'pause'" :size="15" /></template>
@@ -165,23 +164,28 @@ onMounted(() => {
       </NButton>
     </PageHeader>
 
-    <div class="toolbar">
-      <NInput v-model:value="keyword" placeholder="搜索事件、说明或字段值" clearable style="max-width: 320px">
-        <template #prefix><AppIcon name="search" :size="14" /></template>
-      </NInput>
-      <NCheckboxGroup v-model:value="levels">
-        <div class="levels">
-          <NCheckbox value="info">INFO<span class="count">{{ levelCount.info }}</span></NCheckbox>
-          <NCheckbox value="warn">WARN<span class="count">{{ levelCount.warn }}</span></NCheckbox>
-          <NCheckbox value="error">ERROR<span class="count">{{ levelCount.error }}</span></NCheckbox>
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title">
+          事件流
+          <span v-if="paused" class="paused">已暂停（仍在后台累积）</span>
+          <span v-else class="sub">共 {{ logs.length }} 条</span>
         </div>
-      </NCheckboxGroup>
-      <span v-if="paused" class="paused">已暂停刷新（继续在后台累积）</span>
-      <span v-else class="sub">共 {{ logs.length }} 条</span>
-      <NButton v-if="logs.length > 0" quaternary size="tiny" @click="clearLocal">清空显示</NButton>
-    </div>
+        <div class="panel-head-extra">
+          <NInput v-model:value="keyword" placeholder="搜索事件、说明或字段值" clearable size="small" style="width: 240px">
+            <template #prefix><AppIcon name="search" :size="14" /></template>
+          </NInput>
+          <NCheckboxGroup v-model:value="levels">
+            <div class="levels">
+              <NCheckbox value="info">INFO<span class="count tnum">{{ levelCount.info }}</span></NCheckbox>
+              <NCheckbox value="warn">WARN<span class="count tnum">{{ levelCount.warn }}</span></NCheckbox>
+              <NCheckbox value="error">ERROR<span class="count tnum">{{ levelCount.error }}</span></NCheckbox>
+            </div>
+          </NCheckboxGroup>
+          <NButton v-if="logs.length > 0" quaternary size="tiny" @click="clearLocal">清空显示</NButton>
+        </div>
+      </div>
 
-    <NCard size="small">
       <NDataTable
         :columns="columns"
         :data="logs"
@@ -193,22 +197,18 @@ onMounted(() => {
         :pagination="{ pageSize: 20 }"
       >
         <template #empty>
-          <NEmpty description="暂无日志：出现上游失败、凭证切换或定时签到后会显示在这里" />
+          <EmptyState
+            icon="logs"
+            title="暂无日志"
+            desc="出现上游失败、凭证切换或定时签到后，事件会显示在这里。"
+          />
         </template>
       </NDataTable>
-    </NCard>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
 .levels {
   display: flex;
   gap: 14px;
@@ -218,11 +218,10 @@ onMounted(() => {
   margin-left: 6px;
   font-size: 11px;
   color: var(--text-3);
-  font-variant-numeric: tabular-nums;
 }
 
 .paused {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--warn);
 }
 

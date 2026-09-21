@@ -18,16 +18,19 @@ function errorRate(stat: GroupStat): number {
 </script>
 
 <template>
-  <div class="panel">
+  <section class="panel">
     <div class="panel-head">
-      <h3>{{ title }}</h3>
+      <div class="panel-title">
+        {{ title }}
+        <span class="sub">最近 200 条请求</span>
+      </div>
     </div>
     <div v-if="stats.length === 0" class="empty">{{ emptyHint ?? '暂无数据' }}</div>
     <ul v-else class="list">
       <li v-for="stat in stats" :key="stat.key">
         <div class="row">
           <span class="key mono" :title="stat.key">{{ stat.key }}</span>
-          <span class="count">{{ stat.total }}</span>
+          <span class="count tnum">{{ stat.total }}</span>
         </div>
         <div class="track">
           <div class="fill" :style="{ width: (stat.total / max) * 100 + '%' }" />
@@ -40,27 +43,14 @@ function errorRate(stat: GroupStat): number {
         </div>
       </li>
     </ul>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.panel {
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 14px 16px 16px;
-}
-
-.panel-head h3 {
-  margin: 0 0 12px;
-  font-size: 13.5px;
-  font-weight: 600;
-}
-
 .list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 14px 16px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -81,7 +71,6 @@ function errorRate(stat: GroupStat): number {
 }
 
 .count {
-  font-variant-numeric: tabular-nums;
   font-size: 12.5px;
   color: var(--text-2);
 }
@@ -119,7 +108,7 @@ function errorRate(stat: GroupStat): number {
 .empty {
   color: var(--text-3);
   font-size: 12.5px;
-  padding: 18px 0;
+  padding: 22px 16px;
   text-align: center;
 }
 </style>
