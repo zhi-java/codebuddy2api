@@ -293,7 +293,27 @@ class MemoryTokenStore implements TokenStore {
 
 // ── 工厂 ──────────────────────────────────────────────────────────────────
 
-let cachedStore: TokenStore | undefined;
+/**
+ * store 实例注册表。
+ *
+ * 按 KV 实例缓存,而非模块级单例,理由与上面的列表缓存一致:测试会把各模块
+ * 分别打包,模块级变量会让写入方与读取方各持一份实例。挂在 globalThis 上后,
+ * 同一个 KV 在任何一份 bundle 里都解析到同一个 store。
+ */
+interface StoreRegistry {
+  stores: WeakMap<object, TokenStore>;
+  /** 未注入持久化后端时的降级实例(内存存储),进程内共享 */
+  memory?: TokenStore;
+}
+
+const STORE_REGISTRY = globalThis as unknown as { __cbGatewayTokenStores?: StoreRegistry };
+
+function storeRegistry(): StoreRegistry {
+  return (
+    STORE_REGISTRY.__cbGatewayTokenStores ??
+    (STORE_REGISTRY.__cbGatewayTokenStores = { stores: new WeakMap<object, TokenStore>() })
+  );
+}
 
 /**
  * 获取存储实例。未注入持久化后端时降级为内存存储，保证本地开发与测试可用。
@@ -303,19 +323,28 @@ export function createTokenStore(kv?: KVLike, encSecret?: string): TokenStore {
   return new KVTokenStore(kv, encSecret);
 }
 
-/**
- * 取全局存储单例（按是否注入 CREDENTIALS_KV 决定实现）。
- * 测试可通过 resetTokenStore() 重置。
- */
-export function getTokenStore(env: { CREDENTIALS_KV?: KVLike; CREDENTIALS_ENC_SECRET?: string }): TokenStore {
-  if (!cachedStore) {
-    cachedStore = createTokenStore(env.CREDENTIALS_KV, env.CREDENTIALS_ENC_SECRET);
+/** 取存储单例（按是否注入 CREDENTIALS_KV 决定实现）。 */
+export function getTokenStore(env: {
+  CREDENTIALS_KV?: KVLike;
+  CREDENTIALS_ENC_SECRET?: string;
+}): TokenStore {
+  const registry = storeRegistry();
+  const kv = env.CREDENTIALS_KV;
+  if (!kv) {
+    registry.memory ??= createTokenStore(undefined, env.CREDENTIALS_ENC_SECRET);
+    return registry.memory;
   }
-  return cachedStore;
+  let store = registry.stores.get(kv);
+  if (!store) {
+    store = createTokenStore(kv, env.CREDENTIALS_ENC_SECRET);
+    registry.stores.set(kv, store);
+  }
+  return store;
 }
 
+/** 丢弃全部已缓存的 store 实例(测试用)。 */
 export function resetTokenStore(): void {
-  cachedStore = undefined;
+  STORE_REGISTRY.__cbGatewayTokenStores = { stores: new WeakMap<object, TokenStore>() };
 }
 
 /** 计算自建 key 的哈希指纹 */
