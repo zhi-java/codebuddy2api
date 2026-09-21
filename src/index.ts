@@ -18,7 +18,7 @@ import { getTokenStore } from './store';
 import type { UpstreamCredential } from './types';
 import { Env, jsonResponse, fetchWithTimeout, normalizeModelId, resolveRateLimit } from './utils';
 import { handleAdmin } from './admin';
-import { renderLandingPage, renderPublicModelsPage, renderHealthPage } from './admin-ui';
+import { renderLandingPage, renderPublicModelsPage, renderHealthPage, type LandingStatus } from './admin-ui';
 import { checkRateLimit, getRateLimitKey, maybeCleanupBuckets } from './rate-limiter';
 import {
   completionTap,
@@ -31,7 +31,7 @@ import {
   type TokenUsage,
 } from './protocol/sse';
 import { prepareChatPayload, sanitizeChatPayload } from './payload';
-import { recordRequest, attachTokenUsage, type RequestRecord } from './metrics';
+import { recordRequest, attachTokenUsage, uptimeSnapshot, type RequestRecord } from './metrics';
 import { pushLog } from './logs';
 import { anthropicRequestToChat, AnthropicConverter } from './protocol/anthropic';
 import { responsesRequestToChat, ResponsesConverter } from './protocol/responses';
@@ -173,7 +173,7 @@ export default {
     // ── GET / — 品牌落地页;GET /health — 纯 JSON 健康检查 ────────────
     if (request.method === 'GET') {
       if (path === '/') {
-        return htmlResponse(renderLandingPage());
+        return htmlResponse(renderLandingPage(await buildLandingStatus(env)));
       }
       if (path === '/health') {
         if (wantsHtml(request)) {
@@ -191,6 +191,59 @@ export default {
 function wantsHtml(request: Request): boolean {
   const accept = request.headers.get('accept') ?? '';
   return accept.includes('text/html') || accept.includes('application/xhtml+xml');
+}
+
+/**
+ * 组装落地页的运行时状态。
+ *
+ * 该页面对外无鉴权,因此只回传**粗粒度**信息:
+ *   - 模型数量取内置快照目录,不触发上游调用(落地页不该被上游抖动拖慢)
+ *   - 凭证池在服务端就压成三档枚举,渲染层拿不到原始计数,结构上杜绝泄漏
+ */
+async function buildLandingStatus(env: Env): Promise<LandingStatus> {
+  const uptime = uptimeSnapshot();
+  let modelCount = 0;
+  let sampleModel = 'default';
+  let credentialPool: LandingStatus['credentialPool'] = 'unknown';
+
+  try {
+    const models = getModelsList().data;
+    modelCount = models.length;
+    sampleModel = pickSampleModel(models);
+  } catch {
+    modelCount = 0;
+  }
+
+  try {
+    const credentials = await getTokenStore(env).listCredentials();
+    if (credentials.length > 0) {
+      const healthy = credentials.filter((c) => getCredentialStatus(c) === 'healthy').length;
+      if (healthy === 0) credentialPool = 'none';
+      else if (healthy < credentials.length) credentialPool = 'partial';
+      else credentialPool = 'good';
+    }
+  } catch {
+    // 存储不可用时不对外暴露细节
+    credentialPool = 'unknown';
+  }
+
+  return { ...uptime, modelCount, sampleModel, credentialPool };
+}
+
+/**
+ * 落地页 curl 示例引用哪个模型。
+ *
+ * 从目录里现取而非写死：示例写死会在模型下线后变成一条跑不通的命令，
+ * 而这页的首要价值就是「照抄即可用」。
+ */
+const SAMPLE_MODEL_PREFERENCE = ['deepseek-v4-pro', 'glm-5.3', 'hy4-preview'];
+
+function pickSampleModel(models: OpenAIModel[]): string {
+  for (const id of SAMPLE_MODEL_PREFERENCE) {
+    if (models.some((model) => model.id === id)) return id;
+  }
+  // 目录首个条目可能是 'default' 这类别名，仅作兜底
+  return models[0]?.id ?? 'default';
 }
 
 function htmlResponse(body: string): Response {

@@ -9,7 +9,16 @@
 
   const pages = [
     ['登录页', renderLoginPage()],
-    ['落地页', renderLandingPage()],
+    [
+      '落地页',
+      renderLandingPage({
+        startedAt: Date.now() - 3 * 86_400_000,
+        uptimeMs: 3 * 86_400_000 + 4 * 3_600_000,
+        modelCount: 42,
+        sampleModel: 'deepseek-v4-pro',
+        credentialPool: 'good',
+      }),
+    ],
     ['模型目录', renderPublicModelsPage([{ id: 'hy4-preview', _name: 'Hy4 preview' }])],
     ['健康页', renderHealthPage()],
   ];
@@ -33,6 +42,24 @@
     if (label === '落地页') {
       assert.ok(html.includes('/v1/messages'));
       assert.ok(html.includes('/admin'));
+      // 状态门面:运行时长与凭证池档位必须渲染出来
+      assert.ok(html.includes('3 天 4 小时'), '落地页需展示运行时长');
+      assert.ok(html.includes('42'), '落地页需展示模型目录规模');
+      // 安全边界:公开页面不得出现任何计数口径
+      assert.ok(!/凭证池[\s\S]{0,80}\d+\s*\/\s*\d+/.test(html), '落地页不得暴露凭证数量');
+
+      // curl 示例要能直接复制执行:除最后一行外,每行都以 \ 续行
+      const sample = /<pre><code>([\s\S]*?)<\/code><\/pre>/.exec(html);
+      assert.ok(sample, '落地页需包含 curl 示例');
+      const lines = sample[1].split('\n');
+      assert.ok(lines.length > 1, 'curl 示例应为多行');
+      lines.slice(0, -1).forEach((line, index) => {
+        assert.ok(
+          line.trimEnd().endsWith('\\'),
+          'curl 示例第 ' + (index + 1) + ' 行缺少续行符: ' + line,
+        );
+      });
+      assert.ok(html.includes('deepseek-v4-pro'), '示例应引用真实目录中的模型');
     }
   }
 
