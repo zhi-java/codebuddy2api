@@ -35,6 +35,7 @@ import {
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
+import TableSkeleton from '../components/TableSkeleton.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
 import { KIND_NAME, STATUS_META, fmtTime, num, relTime } from '../format';
@@ -96,6 +97,15 @@ const filtered = computed(() => {
     return `${item.name} ${item.id}`.toLowerCase().includes(query);
   });
 });
+
+/**
+ * 首屏加载中（尚未拿到任何一次基础数据）。
+ *
+ * 用 refreshedAt 而非 store.loading 判断：后者在**每次**后台自动刷新时都会置位，
+ * 若据此隐藏表格，已加载好的数据会被周期性抽掉换成骨架，反而制造抖动。
+ * refreshedAt 为 0 只可能是首次拉取，语义精确对应「首屏」。
+ */
+const firstLoad = computed(() => store.loading && store.refreshedAt === 0);
 
 function statusTag(row: CredentialSummary) {
   const meta = STATUS_META[row.status] ?? { label: '未知', type: 'default' as const };
@@ -422,7 +432,7 @@ onMounted(async () => {
 
 <template>
   <div class="page stack">
-    <PageHeader title="上游凭证" desc="管理 CodeBuddy 上游账号凭证；网关按健康度调度，失败自动切换">
+    <PageHeader title="上游凭证" desc="网关按健康度调度，失败自动切换">
       <NButton secondary :loading="store.loading" @click="refreshCredentials">
         <template #icon><AppIcon name="refresh" :size="15" /></template>
         刷新
@@ -450,10 +460,8 @@ onMounted(async () => {
 
     <section class="panel">
       <div class="panel-head">
-        <div class="panel-title">
-          凭证池
-          <span class="sub">共 {{ filtered.length }} 个</span>
-        </div>
+        <!-- 计数不在此重复：上方 chips 的每一项（含「全部」）已带数量 -->
+        <div class="panel-title">凭证池</div>
 
         <div class="panel-head-extra">
           <NInput v-model:value="keyword" placeholder="搜索凭证名称或 ID" clearable size="small" style="width: 220px">
@@ -476,16 +484,25 @@ onMounted(async () => {
               <template #trigger>
                 <AppIcon name="help" :size="14" class="help-ico" />
               </template>
-              每天 {{ CHECKIN_TIME }} 由网关对全部启用凭证执行签到（Buddy 加油站，每日 100 credits），
-              未签成功的会自动补签，避免断签。活动按期开放，当前期次与剩余天数可在行内「签到状态」查看；
-              关闭后仅保留行内「立即签到」按钮。
+              每天 {{ CHECKIN_TIME }} 对全部启用凭证自动签到（Buddy 加油站，每日 100 credits）；
+              未成功的按递增间隔补签，避免断签。关闭后仅保留行内「立即签到」。
             </NPopover>
             <NSwitch size="small" :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
           </div>
         </div>
       </div>
 
+      <!-- 首屏用骨架替代整张表：既避免空框，也避免 #empty 的「还没有上游凭证」
+           在已有数据时闪现一次（加载期间 data 为空会触发空态插槽） -->
+      <TableSkeleton
+        v-if="firstLoad"
+        class="panel-body"
+        :widths="[1.6, 2.4, 1.1, 1, 0.9, 0.7]"
+        :rows="6"
+      />
+
       <NDataTable
+        v-else
         v-model:checked-row-keys="selected"
         :columns="columns"
         :data="filtered"
@@ -501,7 +518,7 @@ onMounted(async () => {
           <EmptyState
             icon="credentials"
             title="还没有上游凭证"
-            desc="录入 ck_ 控制台 Key 或 CLI OAuth token 后，网关才能向上游发起请求。"
+            desc="录入 ck_ 控制台 Key 或 CLI OAuth token 后，网关才能向上游出网。"
           >
             <NButton type="primary" size="small" @click="showCreate = true">添加上游凭证</NButton>
           </EmptyState>

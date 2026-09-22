@@ -26,8 +26,10 @@ import {
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
+import TableSkeleton from '../components/TableSkeleton.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
+import { useCopy } from '../clipboard';
 import { STATUS_META, fmtTime, relTime } from '../format';
 import { refreshKeys, store } from '../store';
 import type { KeySummary } from '../types';
@@ -57,6 +59,12 @@ const filtered = computed(() => {
   if (!query) return store.keys;
   return store.keys.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query));
 });
+
+/**
+ * 首屏加载中。与 CredentialsView 同口径：refreshedAt === 0 才是真正的首屏，
+ * 后台自动刷新时保留已有表格，不做替换以免抖动。
+ */
+const firstLoad = computed(() => store.loading && store.refreshedAt === 0);
 
 function boundNames(key: KeySummary): string {
   if (!key.credentialIds.length) return '未绑定';
@@ -271,14 +279,8 @@ async function submitCreate(): Promise<void> {
   }
 }
 
-async function copy(text: string, label = '已复制'): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-    message.success(label);
-  } catch {
-    message.error('复制失败，请手动选择');
-  }
-}
+/** 复制到剪贴板（明文 Key 只显示一次，提示里点明复制到了什么） */
+const copy = useCopy();
 
 /** 生成可直接粘贴到客户端的 .env 片段（真实接入时最常用） */
 const envSnippet = computed(() => {
@@ -315,7 +317,7 @@ onMounted(() => {
 
 <template>
   <div class="page stack">
-    <PageHeader title="API Keys" desc="客户端持网关 Key 调用；上游凭证由网关统一调度与刷新">
+    <PageHeader title="API Keys" desc="客户端持有网关 Key；上游凭证由网关调度与刷新">
       <NButton secondary :loading="store.loading" @click="refreshKeys">
         <template #icon><AppIcon name="refresh" :size="15" /></template>
         刷新
@@ -339,7 +341,16 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- 首屏骨架：同时避免空态文案（「还没有客户端 Key」）在加载期闪现 -->
+      <TableSkeleton
+        v-if="firstLoad"
+        class="panel-body"
+        :widths="[1.5, 2.2, 1.4, 1, 0.8]"
+        :rows="6"
+      />
+
       <NDataTable
+        v-else
         :columns="columns"
         :data="filtered"
         :bordered="false"
@@ -353,7 +364,7 @@ onMounted(() => {
           <EmptyState
             icon="keys"
             title="还没有客户端 Key"
-            desc="创建 Key 并绑定上游凭证后，客户端即可用它调用网关（明文仅显示一次）。"
+            desc="创建 Key 并绑定上游凭证后即可调用网关（明文仅显示一次）。"
           >
             <NButton type="primary" size="small" @click="showCreate = true">创建 Key</NButton>
           </EmptyState>

@@ -1,0 +1,40 @@
+/**
+ * 自托管 Inter 可变字体（wght 100–900）。
+ *
+ * 为什么不用 Google Fonts CDN：网关面向内网/局域网部署，控制台若依赖外网字体
+ * 会在无外网环境下静默回退，且引入 DNS/TLS 建连开销。字体随构建产物一起分发，
+ * 由 static.ts 长期缓存（带 hash），一次加载后续免请求。
+ *
+ * 为什么用可变字体而非 4 个静态字重：项目使用了 550 / 650 这档半档字重，
+ * 静态字体会被四舍五入到 500/600，字重层级丢失。可变字体单文件覆盖全字重，
+ * 且 48KB 比静态 4 档（97KB）更小。
+ *
+ * 只声明 latin + latin-ext：中文落在两段 unicode-range 之外，浏览器自动回退到
+ * 系统中文字体（PingFang SC / 微软雅黑），不会为汉字下载 Inter 造成浪费；
+ * latin-ext 仅在正文出现带音标字符时才按需拉取，平时零成本。
+ *
+ * font-display: swap —— 字体未就绪时先用回退字体渲染，避免 FOIT 白字。
+ */
+
+/* 拉丁字母（U+0000-00FF 等）：西文与数字的主力子集 */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* 拉丁扩展（含带音标的西欧字符）：仅在出现此类字符时按需下载 */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}

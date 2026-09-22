@@ -6,13 +6,16 @@
  * 并支持按关键字过滤；↑↓ 选择、Enter 执行、Esc 关闭。
  */
 import { computed, nextTick, ref, watch } from 'vue';
-import { NInput, NModal } from 'naive-ui';
+import { NInput, NModal, useMessage } from 'naive-ui';
 import AppIcon from './AppIcon.vue';
 import { ROUTES, navigate } from '../router';
 import { refreshNow } from '../autoRefresh';
+import { writeClipboard } from '../clipboard';
 
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits<{ (event: 'update:show', value: boolean): void }>();
+
+const message = useMessage();
 
 interface Command {
   id: string;
@@ -25,6 +28,7 @@ interface Command {
 const query = ref('');
 const active = ref(0);
 const inputRef = ref<InstanceType<typeof NInput> | null>(null);
+const listRef = ref<HTMLElement | null>(null);
 
 const commands = computed<Command[]>(() => [
   ...ROUTES.map((item) => ({
@@ -47,7 +51,9 @@ const commands = computed<Command[]>(() => [
     hint: '动作',
     icon: 'link',
     run: () => {
-      void navigator.clipboard.writeText(`${window.location.origin}/v1`).catch(() => undefined);
+      // 用统一封装：明文 HTTP 下 navigator.clipboard 不存在，
+      // 直接调用会静默失败（这里原先的 .catch 正是把失败吞掉了）
+      if (!writeClipboard(`${window.location.origin}/v1`)) message.error('复制失败，请手动选中文本');
     },
   },
   {
@@ -77,6 +83,22 @@ watch(
 
 watch(filtered, () => {
   active.value = 0;
+});
+
+/**
+ * 把当前高亮项滚进可视区。
+ *
+ * 之前缺这一步：列表 max-height 300px 而选项超过 6 个就会溢出，
+ * 键盘一路 ↓ 到底时高亮项已滚出可视区、scrollTop 仍是 0——
+ * 用户看不见自己在选什么。命令面板主打全键盘操作，这是硬伤。
+ *
+ * block:'nearest' 而非 'center'：相邻项移动时只做最小滚动，
+ * 否则每按一次 ↓ 整个列表都跟着跳一下，反而更难跟。
+ */
+watch(active, () => {
+  void nextTick(() => {
+    listRef.value?.querySelector('.item.active')?.scrollIntoView({ block: 'nearest' });
+  });
 });
 
 function close(): void {
@@ -120,7 +142,7 @@ function onKeydown(event: KeyboardEvent): void {
         size="large"
         @keydown="onKeydown"
       />
-      <div class="list">
+      <div ref="listRef" class="list">
         <button
           v-for="(command, index) in filtered"
           :key="command.id"
@@ -149,9 +171,10 @@ function onKeydown(event: KeyboardEvent): void {
   width: min(560px, calc(100vw - 32px));
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.55);
+  /* 浅色下浮层靠阴影托起（原深色用的 rgba(2,6,23,.75) 在浅底上是一团脏影） */
+  box-shadow: var(--shadow-pop);
 }
 
 .list {
@@ -159,6 +182,8 @@ function onKeydown(event: KeyboardEvent): void {
   overflow: auto;
   padding: 6px;
   border-top: 1px solid var(--border-soft);
+  /* 滚动条常隐：仅在内容溢出时占位，避免列表短时右侧留一条空槽 */
+  scrollbar-width: thin;
 }
 
 .item {
@@ -170,16 +195,25 @@ function onKeydown(event: KeyboardEvent): void {
   border: none;
   background: none;
   color: var(--text-2);
-  border-radius: 7px;
+  border-radius: 8px;
   font: inherit;
   font-size: 13px;
   text-align: left;
-  transition: background 140ms var(--ease), color 140ms var(--ease);
+  /* 左侧轨道常驻，激活时以强调色填充：用位移以外的第二种方式指示当前项 */
+  box-shadow: inset 2px 0 0 transparent;
+  transition: background 140ms var(--ease), color 140ms var(--ease),
+    box-shadow 140ms var(--ease);
 }
 
 .item.active {
   background: var(--accent-soft);
   color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.item.active .hint {
+  /* 激活项的分组标签同步提亮，否则高亮块里的灰字看起来像禁用 */
+  color: var(--text-2);
 }
 
 .label {

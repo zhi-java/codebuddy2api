@@ -76,6 +76,6 @@ function onKeydown(event: KeyboardEvent, index: number, total: number, options: 
 .item.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 2px rgba(2, 6, 23, 0.25);
+  box-shadow: var(--shadow-sm);
 }
 </style>

@@ -1,90 +1,13 @@
 /**
- * 设计令牌与页面级基元（与 design-system/codebuddy-gateway/MASTER.md 对齐）。
+ * 页面级基元与共享布局工具类。
  *
- * 深色优先：默认即深色，浅色作为系统偏好例外。
- * 组件外观由 Naive UI 主题接管，这里只定义页面级底色、字体、语义色与共享布局基元，
- * 供自绘图表、卡片骨架等无法走主题的场景使用。
+ * 设计令牌集中在 tokens.css（唯一事实源，浅色）。这里只定义：
+ *   - html/body 基础排版与字体栈
+ *   - 全局工具类（.page / .stack / .panel / .sub 等），供各视图复用
+ *   - 无障碍：可见焦点环、reduced-motion
  *
- * 对比度：--text-3 是提示类文本的主力色，深/浅两套都按 WCAG AA 4.5:1 选定
- * （原来的 #64748b / #94a3b8 在各自底色上只有 3.8:1 与 2.4:1）。
+ * 组件外观由 Naive UI 主题接管（见 theme.ts），此处不重复定义组件样式。
  */
-
-:root {
-  /* 表面与背景 */
-  --bg: #020617;
-  --surface: #0f172a;
-  --surface-2: #1e293b;
-  --surface-3: #1a1e2f;
-  --surface-hover: #16203a;
-  --border: #334155;
-  --border-soft: #1e293b;
-
-  /* 文本 */
-  --text: #f8fafc;
-  --text-2: #94a3b8;
-  --text-3: #8494ab;
-
-  /* 语义色 */
-  --accent: #22c55e;
-  --accent-soft: rgba(34, 197, 94, 0.14);
-  --accent-line: rgba(34, 197, 94, 0.38);
-  --danger: #ef4444;
-  --danger-soft: rgba(239, 68, 68, 0.14);
-  --warn: #f59e0b;
-  --warn-soft: rgba(245, 158, 11, 0.14);
-  --info: #38bdf8;
-  --info-soft: rgba(56, 189, 248, 0.14);
-
-  /* 图表 */
-  --chart-bar: rgba(34, 197, 94, 0.35);
-  --chart-bar-strong: rgba(34, 197, 94, 0.7);
-  --chart-error: #ef4444;
-  --chart-token: rgba(56, 189, 248, 0.7);
-  --chart-grid: rgba(148, 163, 184, 0.16);
-
-  /* 形状与纵深 */
-  --radius-sm: 8px;
-  --radius: 10px;
-  --radius-lg: 14px;
-  --shadow: 0 18px 40px -24px rgba(2, 6, 23, 0.9);
-
-  /* 动效 */
-  --ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur: 180ms;
-
-  color-scheme: dark;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f8fb;
-    --surface: #ffffff;
-    --surface-2: #f1f5f9;
-    --surface-3: #eef2f7;
-    --surface-hover: #f1f5f9;
-    --border: #cbd5e1;
-    --border-soft: #e2e8f0;
-    --text: #0f172a;
-    --text-2: #475569;
-    --text-3: #64748b;
-    --accent: #16a34a;
-    --accent-soft: #dcfce7;
-    --accent-line: rgba(22, 163, 74, 0.4);
-    --danger: #dc2626;
-    --danger-soft: #fee2e2;
-    --warn: #b45309;
-    --warn-soft: #fef3c7;
-    --info: #0284c7;
-    --info-soft: #e0f2fe;
-    --chart-bar: rgba(22, 163, 74, 0.35);
-    --chart-bar-strong: rgba(22, 163, 74, 0.75);
-    --chart-error: #dc2626;
-    --chart-token: rgba(2, 132, 199, 0.7);
-    --chart-grid: rgba(100, 116, 139, 0.2);
-    --shadow: 0 18px 40px -26px rgba(15, 23, 42, 0.3);
-    color-scheme: light;
-  }
-}
 
 * {
   box-sizing: border-box;
@@ -101,8 +24,9 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 Inter, ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
+  /* 'Inter Variable' 由 fonts.css 自托管（latin 子集），中文按 unicode-range 自动回退 */
+  font: 14px/1.5 'Inter Variable', Inter, ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'tnum';
   -webkit-font-smoothing: antialiased;
 }
@@ -159,9 +83,27 @@ a,
 /* ── 布局基元 ───────────────────────────────────────────────────────────── */
 
 /* 页面级滚动容器 */
+/* 内容宽度与内衬：顶栏与 .page 共用这两个令牌 */
+:root {
+  --content-max: 1280px;
+  --content-gutter: 20px;
+}
+
+/**
+ * 内容容器宽度规则（顶栏与页面共用同一条规则，而非各写一套）。
+ *
+ * 关键点：max-width 只在**视口足够宽**时才生效。控制台里 .topbar 的父容器
+ * 已被侧栏占去 224px，可用宽度常小于 --content-max，此时 max-width 不触发、
+ * margin:auto 也无从居中——所以两边宽度不同、左边缘必然错位（实测差 22px）。
+ * 让顶栏内层与 .page 套用同一个类，是唯一能保证一致的做法。
+ */
+.page-shell,
 .page {
-  max-width: 1360px;
+  width: 100%;
+  max-width: var(--content-max);
   margin: 0 auto;
+  padding-left: var(--content-gutter);
+  padding-right: var(--content-gutter);
 }
 
 /* 纵向节奏：视图内部按区块堆叠时统一用 16px 间距 */
@@ -189,10 +131,13 @@ a,
 
 /* ── 面板 ───────────────────────────────────────────────────────────────── */
 
+/* 面板：浅色下层次的主力是阴影，描边只作兜底。
+   此前 .panel 无阴影、只有 1.16:1 的淡边，在浅色底上几乎看不出边界。 */
 .panel {
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 

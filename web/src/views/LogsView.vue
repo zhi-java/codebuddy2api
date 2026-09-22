@@ -23,12 +23,15 @@ import {
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
+import TableSkeleton from '../components/TableSkeleton.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
+import { useCopy } from '../clipboard';
 import { LEVEL_META, fmtClock, fmtTime } from '../format';
 import type { LogEntry, LogLevel } from '../types';
 
 const message = useMessage();
+const copy = useCopy();
 
 const logs = ref<LogEntry[]>([]);
 const loading = ref(false);
@@ -36,6 +39,8 @@ const paused = ref(false);
 const held = ref<LogEntry[]>([]);
 const levels = ref<LogLevel[]>(['info', 'warn', 'error']);
 const keyword = ref('');
+/** 是否已经完成过一次拉取：用于区分「首屏加载中」与「确实没有日志」 */
+const loaded = ref(false);
 
 async function load(): Promise<void> {
   if (paused.value) return;
@@ -57,6 +62,8 @@ async function load(): Promise<void> {
     message.error((err as Error).message);
   } finally {
     loading.value = false;
+    // 失败也算「已尝试」：否则接口出错时骨架会永久停留，比空态更难判断
+    loaded.value = true;
   }
 }
 
@@ -85,13 +92,9 @@ function exportLogs(): void {
   message.success(`已导出 ${logs.value.length} 条日志`);
 }
 
+/** 复制整条日志的结构化 JSON，便于直接贴进工单 */
 async function copyLine(entry: LogEntry): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(JSON.stringify(entry));
-    message.success('已复制该条日志');
-  } catch {
-    message.error('复制失败');
-  }
+  await copy(JSON.stringify(entry), '已复制该条日志');
 }
 
 const columns: DataTableColumns<LogEntry> = [
@@ -149,7 +152,7 @@ onMounted(() => {
 
 <template>
   <div class="page stack">
-    <PageHeader title="日志" desc="网关运行事件：上游失败、凭证切换、定时签到等（进程内最近 300 条）">
+    <PageHeader title="日志" desc="上游失败、凭证切换、定时签到等（进程内最近 300 条）">
       <NButton :secondary="!paused" :type="paused ? 'warning' : 'default'" @click="togglePause">
         <template #icon><AppIcon :name="paused ? 'play' : 'pause'" :size="15" /></template>
         {{ paused ? '恢复' : '暂停' }}
@@ -186,7 +189,16 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- 首屏骨架：暂停时不显示（暂停本身意味着用户要留住当前内容） -->
+      <TableSkeleton
+        v-if="!loaded && !paused"
+        class="panel-body"
+        :widths="[0.6, 1, 3, 1.6]"
+        :rows="8"
+      />
+
       <NDataTable
+        v-else
         :columns="columns"
         :data="logs"
         :bordered="false"
@@ -200,7 +212,7 @@ onMounted(() => {
           <EmptyState
             icon="logs"
             title="暂无日志"
-            desc="出现上游失败、凭证切换或定时签到后，事件会显示在这里。"
+            desc="上游失败、凭证切换或定时签到发生后，事件显示在这里。"
           />
         </template>
       </NDataTable>

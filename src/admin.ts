@@ -139,8 +139,11 @@ export async function handleAdmin(request: Request, env: Env, path: string): Pro
   }
 
   // ── 控制台静态资源(带 hash 的 JS/CSS,不含数据,无需鉴权) ───────
+  // Accept-Encoding 透传给 static.ts：命中构建期预压缩的 .br/.gz 时直接返回，
+  // 免去运行时压缩的 CPU 开销（厂商块 676KB → br 149KB）。
+  const acceptEncoding = request.headers.get('accept-encoding');
   if (path !== '/admin' && path !== '/admin/') {
-    const asset = await serveStaticFile(publicDir(env), path, '/admin');
+    const asset = await serveStaticFile(publicDir(env), path, '/admin', acceptEncoding);
     if (asset) return asset;
   }
 
@@ -148,7 +151,7 @@ export async function handleAdmin(request: Request, env: Env, path: string): Pro
   if (!(await isAuthenticated(request, env))) {
     return htmlResponse(renderLoginPage());
   }
-  const shell = await serveAppShell(publicDir(env));
+  const shell = await serveAppShell(publicDir(env), acceptEncoding);
   if (shell) return shell;
   return htmlResponse(renderConsoleNotBuilt());
 }

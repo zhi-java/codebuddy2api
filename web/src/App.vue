@@ -22,7 +22,6 @@ import {
   NNotificationProvider,
   NSwitch,
   NTooltip,
-  darkTheme,
   dateZhCN,
   zhCN,
   type MenuOption,
@@ -32,7 +31,7 @@ import CommandPalette from './components/CommandPalette.vue';
 import { autoRefresh, refreshNow, setAutoRefresh, startAutoRefresh } from './autoRefresh';
 import { ROUTES, navigate, route, startRouter } from './router';
 import { refreshAll, store } from './store';
-import { darkOverrides, lightOverrides } from './theme';
+import { themeOverrides } from './theme';
 import OverviewView from './views/OverviewView.vue';
 import CredentialsView from './views/CredentialsView.vue';
 import KeysView from './views/KeysView.vue';
@@ -51,30 +50,7 @@ const VIEWS = {
 
 const activeView = computed(() => VIEWS[route.value]);
 
-// ── 主题 ─────────────────────────────────────────────────────────────────
-type ThemeMode = 'system' | 'dark' | 'light';
-const themeMode = ref<ThemeMode>((localStorage.getItem('cb.theme') as ThemeMode) ?? 'system');
-const systemPrefersLight = window.matchMedia('(prefers-color-scheme: light)');
-
-const isDark = computed(() => {
-  if (themeMode.value === 'dark') return true;
-  if (themeMode.value === 'light') return false;
-  return !systemPrefersLight.matches;
-});
-
-const theme = computed(() => (isDark.value ? darkTheme : null));
-const overrides = computed(() => (isDark.value ? darkOverrides : lightOverrides));
-
-function setTheme(mode: ThemeMode): void {
-  themeMode.value = mode;
-  localStorage.setItem('cb.theme', mode);
-}
-
-const themeOptions: MenuOption[] = [
-  { label: '跟随系统', key: 'system' },
-  { label: '深色', key: 'dark' },
-  { label: '浅色', key: 'light' },
-];
+// 主题：仅浅色，无切换机制（令牌见 tokens.css，组件覆写见 theme.ts）
 
 // ── 全局状态 ─────────────────────────────────────────────────────────────
 /**
@@ -83,17 +59,20 @@ const themeOptions: MenuOption[] = [
  */
 const health = computed(() => {
   const counts = store.state?.counts;
-  if (!counts || counts.credentials === 0) {
-    return { tone: 'idle', text: '未配置凭证' };
-  }
+  // 首屏数据未到时 state 为 null。此时必须与「确实没有凭证」区分开，
+  // 否则会对一个正常运行的网关显示「未配置凭证」——状态栏里这是错误情报。
+  if (!counts) return { tone: 'idle', text: store.loading ? '加载中…' : '状态未知' };
+  if (counts.credentials === 0) return { tone: 'idle', text: '未配置凭证' };
   if (counts.healthy === counts.credentials) return { tone: 'ok', text: '运行正常' };
   if (counts.healthy > 0) return { tone: 'warn', text: `凭证降级 ${counts.healthy}/${counts.credentials}` };
   return { tone: 'bad', text: '无可用凭证' };
 });
 
-const storageText = computed(() =>
-  store.state?.storage === 'persistent' ? 'SQLite 持久化' : '内存存储（重启丢失）',
-);
+const storageText = computed(() => {
+  // 同上：未拿到 state 时不能断言「内存存储」，那会误报数据不持久
+  if (!store.state) return '存储未知';
+  return store.state.storage === 'persistent' ? 'SQLite 持久化' : '内存存储（重启丢失）';
+});
 
 // ── 导航 ─────────────────────────────────────────────────────────────────
 const collapsed = ref(false);
@@ -216,7 +195,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <NConfigProvider :theme="theme" :theme-overrides="overrides" :locale="zhCN" :date-locale="dateZhCN">
+  <NConfigProvider :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <NMessageProvider :max="3" placement="bottom-right">
       <NDialogProvider>
         <NNotificationProvider :max="3">
@@ -270,8 +249,15 @@ onUnmounted(() => {
               </div>
             </NLayoutSider>
 
-            <NLayoutContent content-style="height: 100%; overflow: auto">
+            <NLayoutContent
+              content-style="height: 100%; overflow: auto; scrollbar-gutter: stable"
+            >
               <div class="topbar">
+                <!-- 顶栏背景通栏，内容用与 .page 完全相同的宽度规则（同一个
+                     .page-shell 类），否则两者各自计算宽度会导致左边缘错位。
+                     原先 topbar 用固定 padding、.page 用 max-width 居中，
+                     两者宽度不同，内容起点会差出 20px 以上。 -->
+                <div class="page-shell topbar-inner">
                 <div class="status" :class="health.tone">
                   <i class="status-dot" />
                   <span class="status-text">{{ health.text }}</span>
@@ -304,17 +290,12 @@ onUnmounted(() => {
                     立即刷新
                   </NTooltip>
 
-                  <NDropdown :options="themeOptions" :value="themeMode" @select="setTheme">
-                    <NButton quaternary size="small" title="主题">
-                      <template #icon><AppIcon :name="isDark ? 'moon' : 'sun'" :size="15" /></template>
-                    </NButton>
-                  </NDropdown>
-
                   <NDropdown :options="accountOptions" @select="onAccount">
                     <NButton quaternary size="small" title="账号与入口">
                       <template #icon><AppIcon name="server" :size="15" /></template>
                     </NButton>
                   </NDropdown>
+                </div>
                 </div>
               </div>
 
@@ -420,20 +401,34 @@ onUnmounted(() => {
   background: var(--warn);
 }
 
-/* ── 顶栏 ── */
+/* ── 顶栏 ──
+   外层只管通栏背景，内层 .topbar-inner（共用 .page-shell 宽度规则）负责
+   内容对齐——「背景通栏 + 内容对齐」这两件事分开，才不会互相牵制。 */
 .topbar {
   position: sticky;
   top: 0;
   z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 20px;
+  padding: 9px 0;
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border-soft);
+}
+
+/* 与 .page 逐字相同的宽度规则。
+   不引用全局 .page-shell：styles.css 是全局样式，而这里编译后会带 scoped
+   作用域属性，全局类选择器匹配不上（实测 max-width 仍为 none）。
+   两边都直接读同一组令牌，改宽度只需改令牌。 */
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding-left: var(--content-gutter);
+  padding-right: var(--content-gutter);
 }
 
 /* 全局状态：一处说清服务是否可用 + 数据落在哪里 */
@@ -535,8 +530,17 @@ onUnmounted(() => {
   min-width: 76px;
 }
 
+/**
+ * 内容区只负责纵向节奏；横向内衬交给 .page（内层容器）。
+ *
+ * 此前这里是 `padding: 20px 22px 56px`，加上 .page 自身的 20px，
+ * 横向共 42px；而顶栏只有 20px —— 两者相差的 22px 正是顶栏与内容
+ * 左边缘错位的原因。横向内衬必须只有一个来源，否则任何一次调整
+ * 都会让两侧重新错开。
+ */
 .content {
-  padding: 20px 22px 56px;
+  padding-top: 20px;
+  padding-bottom: 56px;
 }
 
 @media (max-width: 960px) {
@@ -555,8 +559,9 @@ onUnmounted(() => {
 }
 
 @media (max-width: 640px) {
+  /* 窄屏只收窄内衬宽度，仍走同一个令牌，保证顶栏与内容左边缘继续对齐 */
   .topbar {
-    padding: 8px 14px;
+    padding: 8px var(--content-gutter);
   }
 
   .hint {

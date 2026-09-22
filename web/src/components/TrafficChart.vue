@@ -9,11 +9,16 @@
  *   - 悬停十字线 + 明细卡是真实运维台的标准读数方式，比纯静态图更有用。
  */
 import { computed, ref } from 'vue';
+import { NSkeleton } from 'naive-ui';
 import AppIcon from './AppIcon.vue';
 import { fmtHm } from '../format';
 import type { MinuteBucket } from '../types';
 
-const props = defineProps<{ series: MinuteBucket[] }>();
+const props = defineProps<{
+  series: MinuteBucket[];
+  /** 首屏数据未到：渲染骨架而非「暂无请求」，避免把加载中误报成空 */
+  loading?: boolean;
+}>();
 
 const H = 168;
 /** 空态高度：不必为一个「暂无数据」占满整块图表区，留出空间给下方内容 */
@@ -86,7 +91,12 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
 
 <template>
   <div class="wrap">
-    <div v-if="totalWindow === 0" class="empty">
+    <!-- 加载期画骨架：此时 series 为空，直接判空会把「还没拿到」说成「暂无请求」 -->
+    <div v-if="loading" class="chart-skeleton" :style="{ height: `${EMPTY_H}px` }" aria-busy="true">
+      <NSkeleton v-for="i in 12" :key="i" :sharp="false" height="100%" style="flex: 1" />
+    </div>
+
+    <div v-else-if="totalWindow === 0" class="empty">
       <AppIcon name="activity" :size="18" />
       <div>
         <div class="empty-title">最近 60 分钟暂无请求</div>
@@ -159,6 +169,13 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
   cursor: crosshair;
 }
 
+/* 骨架做成柱状剪影，与真实图表轮廓接近；高度与空态一致，切图时不跳动 */
+.chart-skeleton {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
 .plot svg {
   width: 100%;
   height: 100%;
@@ -197,7 +214,7 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
   font-size: 12px;
   min-width: 132px;
   pointer-events: none;
-  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.5);
+  box-shadow: var(--shadow-pop);
   z-index: 2;
 }
 

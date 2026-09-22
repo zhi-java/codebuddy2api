@@ -7,16 +7,17 @@
  * 这些值来自环境变量（Docker Compose），因此页面只读展示并提示改法。
  */
 import { computed, onMounted, ref } from 'vue';
-import { NButton, NCard, NSwitch, NTooltip, useMessage } from 'naive-ui';
+import { NButton, NCard, NSkeleton, NSwitch, NTooltip, useMessage } from 'naive-ui';
 import AppIcon from '../components/AppIcon.vue';
 import PageHeader from '../components/PageHeader.vue';
 import { api, type DataResponse } from '../api';
+import { useCopy } from '../clipboard';
 import { loadConfig, loadSettings, saveSettings, store } from '../store';
 import type { HistorySnapshot } from '../types';
 
 const message = useMessage();
+const copy = useCopy();
 const saving = ref(false);
-const copyTarget = ref('');
 const archive = ref<HistorySnapshot | null>(null);
 
 const config = computed(() => store.config);
@@ -57,19 +58,6 @@ async function toggleAutoCheckin(value: boolean): Promise<void> {
     message.error((err as Error).message);
   } finally {
     saving.value = false;
-  }
-}
-
-async function copy(value: string, label: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(value);
-    copyTarget.value = label;
-    message.success(`已复制${label}`);
-    window.setTimeout(() => {
-      if (copyTarget.value === label) copyTarget.value = '';
-    }, 1500);
-  } catch {
-    message.error('复制失败');
   }
 }
 
@@ -141,14 +129,14 @@ onMounted(async () => {
         <div class="base-row">
           <span class="k">OpenAI 兼容 Base URL</span>
           <code class="mono">{{ gatewayBase }}</code>
-          <NButton size="tiny" quaternary @click="copy(gatewayBase, 'Base URL')">
+          <NButton size="tiny" quaternary @click="copy(gatewayBase, '已复制 Base URL')">
             <template #icon><AppIcon name="copy" :size="13" /></template>
           </NButton>
         </div>
         <div class="base-row">
           <span class="k">Anthropic Base URL</span>
           <code class="mono">{{ anthropicBase }}</code>
-          <NButton size="tiny" quaternary @click="copy(anthropicBase, 'Anthropic URL')">
+          <NButton size="tiny" quaternary @click="copy(anthropicBase, '已复制 Anthropic URL')">
             <template #icon><AppIcon name="copy" :size="13" /></template>
           </NButton>
         </div>
@@ -163,7 +151,11 @@ onMounted(async () => {
 
     <div class="grid">
       <NCard size="small" title="运行参数">
-        <ul class="rows">
+        <!-- 配置未到位时用骨架，避免渲染出一个「什么都没有」的空盒子 -->
+        <div v-if="!config" class="rows-skeleton">
+          <NSkeleton v-for="i in 6" :key="i" text :sharp="false" height="14px" />
+        </div>
+        <ul v-else class="rows">
           <li v-for="row in rows" :key="row.label">
             <span class="k">
               {{ row.label }}
@@ -178,17 +170,25 @@ onMounted(async () => {
       </NCard>
 
       <NCard size="small" title="上游地址">
-        <ul class="rows">
+        <div v-if="!config" class="rows-skeleton">
+          <NSkeleton v-for="i in 4" :key="i" text :sharp="false" height="14px" />
+        </div>
+        <ul v-else class="rows">
           <li v-for="row in upstreamRows" :key="row.label">
             <span class="k">{{ row.label }}</span>
             <b class="mono url">{{ row.value }}</b>
-            <NButton v-if="row.copyable" size="tiny" quaternary @click="copy(row.value, row.label)">
+            <NButton
+              v-if="row.copyable"
+              size="tiny"
+              quaternary
+              @click="copy(row.value, `已复制 ${row.label}`)"
+            >
               <template #icon><AppIcon name="copy" :size="13" /></template>
             </NButton>
           </li>
         </ul>
         <div class="sub" style="margin-top: 10px">
-          修改上游地址、限流阈值或思考策略需要调整 docker-compose.yml 的环境变量后重启容器。
+          以上均为只读，修改需调整 <code class="mono">docker-compose.yml</code> 环境变量并重启容器。
         </div>
       </NCard>
 
@@ -202,8 +202,7 @@ onMounted(async () => {
           <li v-for="item in inMemory" :key="item" class="tag-item muted">{{ item }}</li>
         </ul>
         <div class="sub" style="margin-top: 12px">
-          日志需要长期留存请以 <code class="mono">docker logs</code> 为准；
-          用量归档保留 {{ historyRetentionDays }} 天，可在「总览」按日/按月查看。
+          日志长期留存以 <code class="mono">docker logs</code> 为准；用量归档保留 {{ historyRetentionDays }} 天。
         </div>
       </NCard>
 
@@ -225,8 +224,8 @@ onMounted(async () => {
           <div>
             <div class="session-title">每日自动签到</div>
             <div class="sub">
-              开启后 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证执行签到；
-              若有凭证未签成功，会按 {{ catchupText }} 自动补签（用尽后等次日主时点）。
+              开启后 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证签到；
+              未成功的按 {{ catchupText }} 补签。
             </div>
           </div>
           <NSwitch
@@ -307,6 +306,14 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 骨架与 .rows 同间距，配置到达后行位置不跳动 */
+.rows-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 0;
 }
 
 .rows li {

@@ -56,23 +56,73 @@ const LOGO_SVG =
   '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
 
 const COPY_SCRIPT = `
+/**
+ * 复制调用示例。
+ *
+ * 必须带 execCommand 回退：navigator.clipboard 只在安全上下文（HTTPS 或
+ * localhost）存在，而公开页最常见的访问方式是局域网明文 HTTP——此时它是
+ * undefined，直接调用会**同步**抛 TypeError，.catch() 接不住，点击毫无反应。
+ * execCommand('copy') 不要求安全上下文，但要求处于用户手势内，故此处同步执行。
+ */
+function legacyCopy(text) {
+  try {
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(area);
+    area.select();
+    area.setSelectionRange(0, text.length);
+    var ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch (err) {
+    return false;
+  }
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(
+      function () { return true; },
+      function () { return legacyCopy(text); },
+    );
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
 document.addEventListener('click', function (event) {
+  // 协议 tab 切换：同时更新 aria-selected，保证读屏可用
+  var tab = event.target.closest('.code-tab');
+  if (tab) {
+    var scope = tab.closest('[data-code-scope]');
+    var index = tab.getAttribute('data-proto');
+    scope.querySelectorAll('.code-tab').forEach(function (t) {
+      var on = t.getAttribute('data-proto') === index;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    scope.querySelectorAll('.code-view').forEach(function (v) {
+      v.classList.toggle('active', v.getAttribute('data-proto') === index);
+    });
+    return;
+  }
+
   var button = event.target.closest('[data-copy]');
   if (!button) return;
-  var block = button.closest('.code');
-  var code = block && block.querySelector('code');
+  var scope = button.closest('[data-code-scope]') || document;
+  // 只复制当前可见的示例，避免复制到用户没看到的协议
+  var view = scope.querySelector('.code-view.active') || scope.querySelector('.code-view');
+  var code = view && view.querySelector('code');
   if (!code) return;
   var label = button.textContent;
-  navigator.clipboard.writeText(code.textContent.trim()).then(function () {
-    button.textContent = '已复制';
-    button.classList.add('done');
+  copyText(code.textContent.trim()).then(function (ok) {
+    button.textContent = ok ? '已复制' : '请手动复制';
+    if (ok) button.classList.add('done');
     setTimeout(function () {
       button.textContent = label;
       button.classList.remove('done');
     }, 1400);
-  }).catch(function () {
-    button.textContent = '复制失败';
-    setTimeout(function () { button.textContent = label; }, 1400);
   });
 });
 `;
@@ -80,27 +130,23 @@ document.addEventListener('click', function (event) {
 // ── 共享样式 ──────────────────────────────────────────────────────────────
 
 const PUBLIC_CSS = `
+  /* 浅色令牌：与 web/src/tokens.css 同源（公开页不走前端构建，只能内联一份）。
+     一致性由 scripts/check-tokens.mjs 在构建前校验，漂移会导致构建失败。 */
   :root {
-    --bg:#020617; --surface:#0f172a; --surface-2:#1e293b; --inset:#0b1220;
-    --border:#334155; --border-soft:#1e293b;
-    --text:#f8fafc; --text-2:#94a3b8; --text-3:#8494ab;
-    --accent:#22c55e; --accent-hover:#4ade80; --accent-ink:#052e16;
-    --accent-soft:rgba(34,197,94,.14);
-    --warn:#fbbf24; --danger:#f87171;
-    --radius:14px; --radius-sm:9px;
+    --bg:#eef1f6; --surface:#ffffff; --surface-2:#f6f8fb; --surface-3:#f1f4f8; --inset:#f6f8fb;
+    --border:#cbd5e1; --border-soft:#e4e9f0;
+    --text:#0f172a; --text-2:#475569; --text-3:#526074;
+    --accent:#14793a; --accent-hover:#127336; --accent-ink:#ffffff;
+    --accent-soft:#e3f3e8;
+    --warn:#9a5b08; --danger:#c81e1e; --info:#0369a1;
+    --radius-page:14px; --radius-page-sm:9px;
     --ease:cubic-bezier(.16,1,.3,1);
-    --shadow:0 18px 40px -18px rgba(2,6,23,.9);
-  }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg:#f6f8fb; --surface:#ffffff; --surface-2:#f1f5f9; --inset:#f1f5f9;
-      --border:#cbd5e1; --border-soft:#e2e8f0;
-      --text:#0f172a; --text-2:#475569; --text-3:#64748b;
-      --accent:#15803d; --accent-hover:#166534; --accent-ink:#ffffff;
-      --accent-soft:#dcfce7;
-      --warn:#b45309; --danger:#dc2626;
-      --shadow:0 18px 40px -22px rgba(15,23,42,.28);
-    }
+    --shadow-sm:0 1px 2px rgba(15,23,42,.06);
+    --shadow-card:0 1px 2px rgba(15,23,42,.05), 0 1px 3px rgba(15,23,42,.04);
+    --shadow-raised:0 4px 12px -2px rgba(15,23,42,.08), 0 2px 4px -2px rgba(15,23,42,.05);
+    --shadow-pop:0 12px 32px -8px rgba(15,23,42,.16), 0 4px 8px -4px rgba(15,23,42,.08);
+    --shadow:var(--shadow-card);
+    color-scheme:light;
   }
   * { box-sizing:border-box; }
   body {
@@ -124,15 +170,14 @@ const PUBLIC_CSS = `
   .nav-brand { display:flex; align-items:center; gap:10px; text-decoration:none; }
   .logo {
     width:32px; height:32px; flex:none; border-radius:9px; display:grid; place-items:center;
-    color:var(--accent-ink); background:linear-gradient(180deg,#4ade80,#16a34a);
-    box-shadow:0 0 0 1px rgba(34,197,94,.3), 0 10px 22px -10px rgba(22,163,74,.9);
+    /* 渐变两端都用达标绿：#14793a 上白图标 5.49:1，#0f6b32 更深 */
+    color:var(--accent-ink); background:linear-gradient(180deg,#178a43,#0f6b32);
+    box-shadow:0 0 0 1px rgba(20,121,58,.3), 0 8px 18px -8px rgba(20,121,58,.55);
   }
   .nav-brand b { display:block; font-size:14px; font-weight:650; letter-spacing:-.01em; }
-  .nav-brand i { display:block; font-size:10.5px; font-style:normal; color:var(--text-3);
-    letter-spacing:.09em; text-transform:uppercase; }
   .nav-links { display:flex; align-items:center; gap:4px; }
   .nav-link {
-    padding:7px 12px; border-radius:var(--radius-sm); font-size:13.5px; color:var(--text-2);
+    padding:7px 12px; border-radius:var(--radius-page-sm); font-size:13.5px; color:var(--text-2);
     text-decoration:none; cursor:pointer; transition:color .18s var(--ease), background .18s var(--ease);
   }
   .nav-link:hover { color:var(--text); background:var(--surface-2); }
@@ -142,8 +187,7 @@ const PUBLIC_CSS = `
   .wrap { width:min(1120px,100%); margin:0 auto; padding:0 24px; flex:1; }
   .section { margin-top:64px; }
   .section-head { margin-bottom:20px; }
-  .section-head h2 { margin:0 0 6px; font-size:19px; font-weight:650; letter-spacing:-.02em; }
-  .section-head p { margin:0; color:var(--text-2); font-size:13.5px; max-width:70ch; }
+  .section-head h2 { margin:0; font-size:19px; font-weight:650; letter-spacing:-.02em; }
 
   /* ── Hero ── */
   .hero { position:relative; padding:72px 0 8px; }
@@ -178,24 +222,27 @@ const PUBLIC_CSS = `
 
   /* ── 按钮 ── */
   .btn {
-    display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:var(--radius-sm);
+    display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:var(--radius-page-sm);
     font:inherit; font-size:14px; font-weight:600; text-decoration:none; cursor:pointer;
     border:1px solid transparent; transition:background .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease);
   }
   .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .btn-primary { background:var(--accent); color:var(--accent-ink); }
   .btn-primary:hover { background:var(--accent-hover); }
-  .btn-ghost { background:transparent; color:var(--text-2); border-color:var(--border); }
-  .btn-ghost:hover { color:var(--text); border-color:var(--text-3); }
 
   /* ── 状态指标条 ── */
+  /* 弹性行而非栅格：数据点只有 2 个，不需要列数自适应。
+     margin 与 .section 统一为 64px，避免 hero→stats 44px、其余 64px 的参差。 */
   .stats {
-    display:grid; gap:12px; margin-top:44px;
-    grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+    display:flex; align-items:stretch; gap:28px; margin-top:64px;
+    flex-wrap:wrap;
   }
+  .stat-divider { width:1px; background:var(--border-soft); flex:none; }
   .stat {
-    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius);
+    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page);
     padding:16px 18px; display:flex; flex-direction:column; gap:5px;
+    /* 内容决定宽度并设下限：避免又扁又宽（此前每项被拉到 530px） */
+    flex:0 1 auto; min-width:190px;
   }
   .stat-label { font-size:12px; color:var(--text-3); }
   .stat-value { font-size:22px; font-weight:650; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
@@ -204,53 +251,65 @@ const PUBLIC_CSS = `
   .stat-value.bad { color:var(--danger); }
   .stat-hint { font-size:11.5px; color:var(--text-3); }
 
-  /* ── 协议卡 ── */
-  .cards { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
+  /* ── 协议卡（只放名称/端点/鉴权头，代码示例见下方全宽面板） ── */
+  .cards { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
   .card {
-    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius);
-    padding:20px; display:flex; flex-direction:column; gap:10px;
+    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page);
+    padding:18px 20px; display:flex; flex-direction:column; gap:8px;
     transition:border-color .2s var(--ease), transform .2s var(--ease), box-shadow .2s var(--ease);
   }
-  .card:hover { border-color:var(--border); transform:translateY(-2px); box-shadow:var(--shadow); }
+  .card:hover { border-color:var(--border); transform:translateY(-2px); box-shadow:var(--shadow-raised); }
   .card-top { display:flex; align-items:center; gap:10px; }
   .tag {
     font-size:10.5px; font-weight:650; letter-spacing:.09em; text-transform:uppercase;
     color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:3px 9px;
   }
   .card h3 { margin:0; font-size:15.5px; font-weight:650; }
-  .card p { margin:0; color:var(--text-2); font-size:13px; }
   .endpoint { font-size:12px; color:var(--text-2); }
   .endpoint b { color:var(--accent); font-weight:650; }
   .auth { font-size:11px; color:var(--text-3); }
 
-  /* ── 代码块 ── */
-  .code {
-    position:relative; margin-top:auto; background:var(--inset);
-    border:1px solid var(--border-soft); border-radius:var(--radius-sm); overflow:hidden;
+  /* ── 全宽代码面板（tab 切换协议）──
+     实测 curl 命令最长需 ~660px，3 列卡内可用仅 ~304px（54% 被截断）。
+     提到全宽后单行可完整显示，无需横向滚动。 */
+  .code-panel {
+    margin-top:14px; background:var(--surface); border:1px solid var(--border-soft);
+    border-radius:var(--radius-page); overflow:hidden;
   }
-  /* 复制按钮独立成条，不再压在代码首行上 */
   .code-head {
-    display:flex; align-items:center; justify-content:space-between; gap:8px;
-    padding:5px 6px 5px 12px; border-bottom:1px solid var(--border-soft);
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:8px 10px 8px 12px; border-bottom:1px solid var(--border-soft);
   }
-  .code-lang { font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--text-3); }
-  .code pre { margin:0; padding:12px 14px; overflow-x:auto; }
-  .code code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    font-size:12px; line-height:1.75; color:var(--text-2); white-space:pre; }
+  .code-tabs { display:flex; gap:4px; flex-wrap:wrap; }
+  .code-tab {
+    padding:6px 12px; font:inherit; font-size:12.5px; font-weight:550;
+    color:var(--text-2); background:transparent; border:1px solid transparent;
+    border-radius:var(--radius-page-sm); cursor:pointer;
+    transition:color .18s var(--ease), background .18s var(--ease), border-color .18s var(--ease);
+  }
+  .code-tab:hover { color:var(--text); background:var(--surface-2); }
+  .code-tab.active { color:var(--accent); background:var(--accent-soft); border-color:transparent; }
+  .code-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .code-view { display:none; }
+  .code-view.active { display:block; }
+  .code-panel pre { margin:0; padding:14px 16px; overflow-x:auto; }
+  .code-panel code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px; line-height:1.8; color:var(--text-2); white-space:pre; }
   .copy {
-    padding:3px 10px; font:inherit; font-size:11.5px; white-space:nowrap;
+    padding:5px 12px; font:inherit; font-size:12px; white-space:nowrap;
     color:var(--text-2); background:var(--surface-2); border:1px solid var(--border);
-    border-radius:6px; cursor:pointer; transition:color .18s var(--ease), border-color .18s var(--ease);
+    border-radius:var(--radius-page-sm); cursor:pointer;
+    transition:color .18s var(--ease), border-color .18s var(--ease), background .18s var(--ease);
   }
   .copy:hover { color:var(--text); border-color:var(--accent); }
-  .copy.done { color:var(--accent); border-color:var(--accent); }
+  .copy.done { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
 
   /* ── 接入步骤 ── */
   .steps { list-style:none; margin:0; padding:0; display:grid; gap:12px;
     grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); counter-reset:step; }
   .step {
     display:flex; gap:14px; padding:18px 20px; background:var(--surface);
-    border:1px solid var(--border-soft); border-radius:var(--radius);
+    border:1px solid var(--border-soft); border-radius:var(--radius-page);
   }
   .step-no {
     width:26px; height:26px; flex:none; border-radius:50%; display:grid; place-items:center;
@@ -276,7 +335,7 @@ const PUBLIC_CSS = `
   /* ── 模型目录 ── */
   .model-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); }
   .model {
-    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-sm);
+    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page-sm);
     padding:14px 16px; transition:border-color .2s var(--ease);
   }
   .model:hover { border-color:var(--border); }
@@ -288,7 +347,7 @@ const PUBLIC_CSS = `
   /* ── 健康面板 ── */
   .health {
     display:flex; align-items:center; gap:18px; background:var(--surface);
-    border:1px solid var(--border-soft); border-radius:var(--radius); padding:28px 30px;
+    border:1px solid var(--border-soft); border-radius:var(--radius-page); padding:28px 30px;
   }
   .health-dot {
     width:14px; height:14px; flex:none; border-radius:50%; background:var(--accent);
@@ -299,7 +358,6 @@ const PUBLIC_CSS = `
 
   @media (max-width:640px) {
     .nav { padding:10px 16px; }
-    .nav-brand i { display:none; }
     .nav-link { padding:7px 9px; font-size:13px; }
     .wrap { padding:0 16px; }
     .hero { padding:44px 0 0; }
@@ -340,7 +398,7 @@ export function renderLoginPage(): string {
   .field label { display:block; font-size:12.5px; font-weight:550; color:var(--text-2); margin-bottom:7px; }
   .field input {
     width:100%; padding:10px 12px; font:inherit; font-size:14px; color:var(--text);
-    background:var(--inset); border:1px solid var(--border); border-radius:var(--radius-sm);
+    background:var(--inset); border:1px solid var(--border); border-radius:var(--radius-page-sm);
     transition:border-color .18s var(--ease), box-shadow .18s var(--ease);
   }
   .field input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
@@ -354,14 +412,14 @@ export function renderLoginPage(): string {
   <div class="login">
     <div class="logo">${LOGO_SVG}</div>
     <h1>CodeBuddy Gateway</h1>
-    <p class="sub">生产控制台 · 使用管理员密码登录</p>
+    <p class="sub">管理控制台</p>
     <form id="login-form">
       <div class="field">
         <label for="pw">密码</label>
         <input id="pw" type="password" placeholder="管理员密码" autocomplete="current-password" required autofocus>
       </div>
       <button class="btn btn-primary" type="submit">登录</button>
-      <div class="hint" id="hint">会话经 HMAC 签名，超时自动失效</div>
+      <div class="hint" id="hint">会话超时自动失效</div>
     </form>
   </div>
 <script>
@@ -399,7 +457,6 @@ export function renderLoginPage(): string {
 interface ProtocolSpec {
   tag: string;
   name: string;
-  desc: string;
   /** 端点说明行里的鉴权头 */
   auth: string;
   method: string;
@@ -412,7 +469,6 @@ const PROTOCOLS: ProtocolSpec[] = [
   {
     tag: 'OpenAI',
     name: 'Chat Completions',
-    desc: '通用对话接口，覆盖绝大多数 OpenAI 兼容客户端，支持流式与非流式。',
     auth: 'Authorization: Bearer',
     method: 'POST',
     path: '/v1/chat/completions',
@@ -421,7 +477,6 @@ const PROTOCOLS: ProtocolSpec[] = [
   {
     tag: 'Anthropic',
     name: 'Messages',
-    desc: 'Anthropic 协议，供 Claude Code 等原生 Anthropic 客户端直接接入。',
     auth: 'x-api-key',
     method: 'POST',
     path: '/v1/messages',
@@ -430,7 +485,6 @@ const PROTOCOLS: ProtocolSpec[] = [
   {
     tag: 'OpenAI',
     name: 'Responses',
-    desc: 'OpenAI 新版响应接口，面向 Agent SDK 等 Responses 协议客户端。',
     auth: 'Authorization: Bearer',
     method: 'POST',
     path: '/v1/responses',
@@ -455,23 +509,53 @@ function curlSample(spec: ProtocolSpec, model: string): string {
   ].join('\n');
 }
 
-function renderProtocolCard(spec: ProtocolSpec, model: string): string {
+/**
+ * 协议卡：只承载「协议名 + 端点 + 鉴权头」。
+ *
+ * 代码示例**不放在卡内**：实测 curl 命令需 ~660px 才能完整显示，而 3 列栅格
+ * 把卡宽锁在 ~348px（可用 304px），Messages 卡的示例有 54% 内容被横向截断。
+ * 示例统一提到下方全宽代码区，按协议切换。
+ */
+function renderProtocolCard(spec: ProtocolSpec): string {
   return `<article class="card">
   <div class="card-top">
     <span class="tag">${escapeHtml(spec.tag)}</span>
     <h3>${escapeHtml(spec.name)}</h3>
   </div>
-  <p>${escapeHtml(spec.desc)}</p>
   <div class="endpoint mono"><b>${escapeHtml(spec.method)}</b> ${escapeHtml(spec.path)}</div>
   <div class="auth mono">鉴权头 ${escapeHtml(spec.auth)}</div>
-  <div class="code">
-    <div class="code-head">
-      <span class="code-lang">bash</span>
-      <button class="copy" type="button" data-copy aria-label="复制 ${escapeHtml(spec.name)} 调用示例">复制</button>
-    </div>
-    <pre><code>${escapeHtml(curlSample(spec, model))}</code></pre>
-  </div>
 </article>`;
+}
+
+/**
+ * 全宽代码区：tab 切换三个协议的调用示例。
+ *
+ * 用 tab 而非三块并列：用户的实际动作是「先确定用哪个协议 → 复制命令」，
+ * 切换比横向扫三块更快，且换来的宽度让命令无需横向滚动即可完整阅读。
+ */
+function renderCodePanel(model: string): string {
+  const tabs = PROTOCOLS.map(
+    (spec, i) =>
+      `<button class="code-tab${i === 0 ? ' active' : ''}" type="button" role="tab" aria-selected="${i === 0}" data-proto="${i}">${escapeHtml(spec.name)}</button>`,
+  ).join('\n      ');
+
+  const views = PROTOCOLS.map(
+    (spec, i) =>
+      `<div class="code-view${i === 0 ? ' active' : ''}" data-proto="${i}" role="tabpanel">` +
+      `<pre><code>${escapeHtml(curlSample(spec, model))}</code></pre></div>`,
+  ).join('\n    ');
+
+  return `<div class="code-panel" data-code-scope>
+    <div class="code-head">
+      <div class="code-tabs" role="tablist">
+      ${tabs}
+      </div>
+      <button class="copy" type="button" data-copy aria-label="复制当前协议的调用示例">复制</button>
+    </div>
+    <div class="code-views">
+    ${views}
+    </div>
+  </div>`;
 }
 
 /** 凭证池状态 → 展示文案与色调 */
@@ -513,7 +597,7 @@ export function renderLandingPage(status: LandingStatus): string {
 <nav class="nav">
   <a class="nav-brand" href="/">
     <span class="logo">${LOGO_SVG}</span>
-    <span><b>CodeBuddy Gateway</b><i>Production API gateway</i></span>
+    <span><b>CodeBuddy Gateway</b></span>
   </a>
   <div class="nav-links">
     <a class="nav-link" href="/v1/models">模型目录</a>
@@ -528,72 +612,62 @@ export function renderLandingPage(status: LandingStatus): string {
       <i class="dot"></i>${running ? '服务运行中' : '服务状态未知'}${running ? ` · 已运行 ${escapeHtml(formatUptime(status.uptimeMs))}` : ''}
     </span>
     <h1>一套上游凭证<br>接入<em>任意主流客户端</em></h1>
-    <p>同时提供 OpenAI Chat Completions、Anthropic Messages 与 OpenAI Responses 三种协议。
-       上游凭证由网关托管、自动续期，客户端只需持有网关签发的 Key，模型名无需任何改动。</p>
+    <p>网关托管上游凭证并自动续期。</p>
     <div class="hero-cta">
       <a class="btn btn-primary" href="/admin">进入管理控制台</a>
-      <a class="btn btn-ghost" href="#protocols">查看接入方式</a>
     </div>
   </section>
 
+  <!-- 两个数据点用弹性行，不用栅格：auto-fit 会为 2 项建出 5 条轨道，
+       每项撑到 530px，内部却只有三个短元素，比例失衡 -->
   <section class="stats">
-    <div class="stat">
-      <span class="stat-label">服务状态</span>
-      <b class="stat-value ${running ? 'ok' : 'bad'}">${running ? '运行中' : '未知'}</b>
-      <span class="stat-hint">${running ? `持续运行 ${escapeHtml(formatUptime(status.uptimeMs))}` : '未取得运行信息'}</span>
-    </div>
     <div class="stat">
       <span class="stat-label">凭证池</span>
       <b class="stat-value ${pool.tone}">${escapeHtml(pool.label)}</b>
       <span class="stat-hint">${escapeHtml(pool.hint)}</span>
     </div>
+    <span class="stat-divider" aria-hidden="true"></span>
     <div class="stat">
       <span class="stat-label">模型目录</span>
       <b class="stat-value">${status.modelCount ? status.modelCount.toLocaleString('en-US') : '—'}</b>
-      <span class="stat-hint">GET /v1/models 可获取完整列表</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">协议端点</span>
-      <b class="stat-value">${PROTOCOLS.length}</b>
-      <span class="stat-hint">Chat Completions · Messages · Responses</span>
+      <span class="stat-hint">可用模型数</span>
     </div>
   </section>
 
   <section class="section" id="protocols">
     <div class="section-head">
-      <h2>三种协议，同一套凭证</h2>
-      <p>把客户端的 base_url 指向本网关，鉴权换成网关 Key 即可。协议之间共享同一个上游凭证池与故障转移链路。</p>
+      <h2>接入方式</h2>
     </div>
     <div class="cards">
-      ${PROTOCOLS.map((spec) => renderProtocolCard(spec, status.sampleModel)).join('\n')}
+      ${PROTOCOLS.map((spec) => renderProtocolCard(spec)).join('\n')}
     </div>
+    ${renderCodePanel(status.sampleModel)}
   </section>
 
   <section class="section" id="quickstart">
     <div class="section-head">
       <h2>三步接入</h2>
-      <p>全流程在管理控制台完成，服务端不需要改一行代码。</p>
     </div>
     <ol class="steps">
       <li class="step">
         <span class="step-no">1</span>
         <div>
           <b>添加上游凭证</b>
-          <span>录入 CodeBuddy 凭证，网关负责 Token 刷新、额度查询与每日自动签到。</span>
+          <span>录入 CodeBuddy 凭证，网关负责刷新、额度与签到。</span>
         </div>
       </li>
       <li class="step">
         <span class="step-no">2</span>
         <div>
           <b>签发网关 Key</b>
-          <span>创建 <code class="mono">sk-cb-*</code> Key 并绑定凭证池，客户端只持有它，上游凭证不出网关。</span>
+          <span>创建 <code class="mono">sk-cb-*</code> Key 并绑定凭证池，上游凭证不出网关。</span>
         </div>
       </li>
       <li class="step">
         <span class="step-no">3</span>
         <div>
           <b>切换 base_url</b>
-          <span>把客户端指向本网关，模型名与请求体保持原样，即可获得多凭证故障转移。</span>
+          <span>指向本网关即获得多凭证故障转移。</span>
         </div>
       </li>
     </ol>
@@ -601,7 +675,6 @@ export function renderLandingPage(status: LandingStatus): string {
 </main>
 
 <footer class="foot">
-  <span>CodeBuddy Gateway · 生产 API 网关</span>
   <a href="/admin">管理控制台</a>
   <a href="/v1/models">模型目录</a>
   <a href="/health">健康检查</a>
@@ -657,7 +730,7 @@ ${navBar()}
 <main class="wrap">
   <header class="page-head">
     <h1>模型目录</h1>
-    <p>共 ${models.length.toLocaleString('en-US')} 个模型 · 客户端可通过 <code class="mono">GET /v1/models</code> 获取 JSON</p>
+    <p>共 ${models.length.toLocaleString('en-US')} 个模型</p>
   </header>
   <div class="model-grid">${cards}</div>
 </main>
@@ -687,7 +760,7 @@ ${navBar()}
 <main class="wrap">
   <header class="page-head">
     <h1>运行状态</h1>
-    <p>监控脚本请调用 JSON 接口 <code class="mono">GET /health</code>，浏览器访问时展示本页。</p>
+    <p>监控脚本请调用 <code class="mono">GET /health</code></p>
   </header>
   <div class="health">
     <span class="health-dot"></span>
@@ -708,7 +781,7 @@ function navBar(): string {
   return `<nav class="nav">
   <a class="nav-brand" href="/">
     <span class="logo">${LOGO_SVG}</span>
-    <span><b>CodeBuddy Gateway</b><i>Production API gateway</i></span>
+    <span><b>CodeBuddy Gateway</b></span>
   </a>
   <div class="nav-links">
     <a class="nav-link" href="/v1/models">模型目录</a>

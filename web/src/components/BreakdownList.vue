@@ -5,10 +5,17 @@
  * 用条形长度表达占比，同时显示原始次数——不单靠颜色传达信息。
  */
 import { computed } from 'vue';
+import { NSkeleton } from 'naive-ui';
 import { fmtTokens } from '../format';
 import type { GroupStat } from '../types';
 
-const props = defineProps<{ title: string; stats: GroupStat[]; emptyHint?: string }>();
+const props = defineProps<{
+  title: string;
+  stats: GroupStat[];
+  emptyHint?: string;
+  /** 首屏数据未到：渲染骨架而非「暂无数据」，避免把加载中误报成空 */
+  loading?: boolean;
+}>();
 
 const max = computed(() => Math.max(1, ...props.stats.map((item) => item.total)));
 
@@ -25,7 +32,13 @@ function errorRate(stat: GroupStat): number {
         <span class="sub">最近 200 条请求</span>
       </div>
     </div>
-    <div v-if="stats.length === 0" class="empty">{{ emptyHint ?? '暂无数据' }}</div>
+    <ul v-if="loading" class="list" aria-busy="true" aria-label="加载中">
+      <li v-for="i in 3" :key="i">
+        <NSkeleton text :sharp="false" width="55%" height="13px" />
+        <NSkeleton text :sharp="false" width="100%" height="5px" style="margin-top: 8px" />
+      </li>
+    </ul>
+    <div v-else-if="stats.length === 0" class="empty">{{ emptyHint ?? '暂无数据' }}</div>
     <ul v-else class="list">
       <li v-for="stat in stats" :key="stat.key">
         <div class="row">

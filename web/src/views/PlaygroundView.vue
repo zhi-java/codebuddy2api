@@ -24,11 +24,13 @@ import {
 import AppIcon from '../components/AppIcon.vue';
 import PageHeader from '../components/PageHeader.vue';
 import { streamChatTest } from '../api';
+import { useCopy } from '../clipboard';
 import { fmtMs, fmtTime, usageNum } from '../format';
 import { refreshCredentials, store } from '../store';
 import type { PlaygroundMessage } from '../types';
 
 const message = useMessage();
+const copy = useCopy();
 
 const credentialId = ref('');
 const model = ref('deepseek-v4.1-flash');
@@ -126,12 +128,7 @@ function clear(): void {
 }
 
 async function copyReply(item: PlaygroundMessage): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(item.content);
-    message.success('已复制回复正文');
-  } catch {
-    message.error('复制失败');
-  }
+  await copy(item.content, '已复制回复正文');
 }
 
 onMounted(async () => {

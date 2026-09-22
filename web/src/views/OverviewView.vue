@@ -14,6 +14,7 @@ import { computed, h, onMounted, ref, watch } from 'vue';
 import {
   NButton,
   NDataTable,
+  NSkeleton,
   NTag,
   NTooltip,
   useMessage,
@@ -25,6 +26,7 @@ import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import SegmentedControl from '../components/SegmentedControl.vue';
 import StatCard from '../components/StatCard.vue';
+import TableSkeleton from '../components/TableSkeleton.vue';
 import TrafficChart from '../components/TrafficChart.vue';
 import TrendBars from '../components/TrendBars.vue';
 import { api, type DataResponse } from '../api';
@@ -97,6 +99,15 @@ onMounted(refresh);
 
 const totals = computed(() => metrics.value?.totals);
 const counts = computed(() => store.state?.counts);
+
+/**
+ * 首屏加载中（实时指标与归档都还没拿到）。
+ *
+ * 必须用它替代「用默认值兜底」的渲染方式：加载期间 totals 为空，KPI 卡片会显示
+ * 「请求速率 0 /min」，归档区因 enabled 尚未返回而显示「日/月归档未启用」——
+ * 对一个正常运行的网关，这两条都是**错误陈述**，不只是不好看。
+ */
+const firstLoad = computed(() => loading.value && metrics.value === null && history.value === null);
 
 /** 迷你趋势：实时 KPI 共用最近 30 分钟窗口，够看出方向又不至于糊成噪点 */
 const liveWindow = computed(() => (metrics.value?.series ?? []).slice(-30));
@@ -431,7 +442,7 @@ const recentColumns: DataTableColumns<RequestRecord> = [
 
 <template>
   <div class="page stack">
-    <PageHeader title="总览" desc="实时口径为本进程最近 60 分钟；日/月归档持久化保存，重启后仍可回溯">
+    <PageHeader title="总览" desc="实时口径为进程内最近 60 分钟；归档持久化，重启后可回溯">
       <NButton secondary :loading="loading" @click="refresh">
         <template #icon><AppIcon name="refresh" :size="15" /></template>
         刷新
@@ -460,7 +471,15 @@ const recentColumns: DataTableColumns<RequestRecord> = [
     </div>
 
     <!-- ② 实时 KPI：4 张主指标，权重一致，趋势线作为背景佐证 -->
-    <section class="kpis" aria-label="实时指标">
+    <section v-if="firstLoad" class="kpis" aria-label="实时指标加载中" aria-busy="true">
+      <div v-for="card in 4" :key="card" class="kpi-skeleton">
+        <NSkeleton text :sharp="false" width="45%" height="12px" />
+        <NSkeleton text :sharp="false" width="65%" height="26px" />
+        <NSkeleton text :sharp="false" width="80%" height="11px" />
+      </div>
+    </section>
+
+    <section v-else class="kpis" aria-label="实时指标">
       <StatCard
         label="请求速率"
         :value="num(totals?.lastMinute ?? 0)"
@@ -510,7 +529,7 @@ const recentColumns: DataTableColumns<RequestRecord> = [
         </div>
       </div>
       <div class="panel-body">
-        <TrafficChart :series="metrics?.series ?? []" />
+        <TrafficChart :series="metrics?.series ?? []" :loading="firstLoad" />
       </div>
     </section>
 
@@ -547,11 +566,16 @@ const recentColumns: DataTableColumns<RequestRecord> = [
         </div>
       </div>
 
-      <div v-if="!archiveEnabled" class="panel-body">
+      <!-- 先判 firstLoad：否则 enabled 尚未返回时会误报「归档未启用」 -->
+      <div v-if="firstLoad" class="panel-body">
+        <TableSkeleton :widths="[3, 1.2, 1.2, 1.2]" :rows="5" />
+      </div>
+
+      <div v-else-if="!archiveEnabled" class="panel-body">
         <EmptyState
           icon="database"
           title="日/月归档未启用"
-          desc="归档需要持久化存储。当前进程使用内存存储（未配置 DATA_FILE 或 CREDENTIALS_KV），重启后历史无法保留。"
+          desc="归档需持久化存储；当前为内存存储，重启后历史不保留。"
         />
       </div>
 
@@ -624,8 +648,8 @@ const recentColumns: DataTableColumns<RequestRecord> = [
 
     <!-- ⑤ 分布 -->
     <div class="grid-auto">
-      <BreakdownList title="按模型" :stats="metrics?.byModel ?? []" empty-hint="暂无请求记录" />
-      <BreakdownList title="按接口" :stats="metrics?.byPath ?? []" empty-hint="暂无请求记录" />
+      <BreakdownList title="按模型" :stats="metrics?.byModel ?? []" empty-hint="暂无请求记录" :loading="firstLoad" />
+      <BreakdownList title="按接口" :stats="metrics?.byPath ?? []" empty-hint="暂无请求记录" :loading="firstLoad" />
     </div>
 
     <!-- ⑥ 明细 -->
@@ -638,7 +662,11 @@ const recentColumns: DataTableColumns<RequestRecord> = [
           </div>
         </div>
         <div class="panel-body">
-          <div v-if="(metrics?.recentErrors ?? []).length === 0" class="all-good">
+          <!-- 加载期不能显示「最近 0 次请求均成功」——那是把一个未知状态说成好消息 -->
+          <div v-if="firstLoad" class="errors-skeleton">
+            <NSkeleton v-for="i in 3" :key="i" text :sharp="false" height="13px" />
+          </div>
+          <div v-else-if="(metrics?.recentErrors ?? []).length === 0" class="all-good">
             <AppIcon name="check" :size="15" />
             <span>最近 {{ num(metrics?.recent.length ?? 0) }} 次请求均成功</span>
           </div>
@@ -656,11 +684,12 @@ const recentColumns: DataTableColumns<RequestRecord> = [
       <section class="panel">
         <div class="panel-head">
           <div class="panel-title">最近请求</div>
-          <div class="panel-head-extra">
-            <span class="sub">共 {{ num(metrics?.recent.length ?? 0) }} 条明细</span>
-          </div>
         </div>
+        <!-- 首屏骨架同样是为了避免「暂无请求记录」在加载期闪现 -->
+        <TableSkeleton v-if="firstLoad" class="panel-body" :widths="[1, 1.4, 0.7, 0.7, 1.2]" :rows="5" />
+
         <NDataTable
+          v-else
           :columns="recentColumns"
           :data="metrics?.recent.slice(0, 8) ?? []"
           :bordered="false"
@@ -670,7 +699,7 @@ const recentColumns: DataTableColumns<RequestRecord> = [
           :pagination="false"
         >
           <template #empty>
-            <EmptyState icon="activity" title="暂无请求记录" desc="客户端调用网关后，这里会显示接口、模型、状态与耗时。" />
+            <EmptyState icon="activity" title="暂无请求记录" desc="客户端调用网关后，这里显示接口、模型、状态与耗时。" />
           </template>
         </NDataTable>
       </section>
@@ -736,6 +765,19 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+/* KPI 骨架：外框与 StatCard 保持一致，加载完成时盒子不移动（CLS） */
+.kpi-skeleton {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-height: 96px;
 }
 
 /* ── 图例 ── */
@@ -834,6 +876,14 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   padding: 18px 2px;
   color: var(--accent);
   font-size: 13px;
+}
+
+/* 与 .errors 的行高节奏对齐，加载完成时内容不跳动 */
+.errors-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 2px;
 }
 
 .errors {
