@@ -1,6 +1,6 @@
 {
   "name": "codebuddy-gateway",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Node.js proxy gateway for CodeBuddy chat completions",
   "main": "src/server.ts",
   "scripts": {
