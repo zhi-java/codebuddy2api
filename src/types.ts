@@ -46,6 +46,58 @@ export interface Credential {
 }
 
 /**
+ * Key 级配额策略。
+ *
+ * 三类**总量**配额（非速率）：请求数、Token 消耗、积分消耗。
+ * 每类各有日/月两个窗口，未设置表示该窗口不限制。
+ *
+ * 为什么是总量而非速率：管理台的诉求是「这个 Key 一天/一月最多用多少」，
+ * 属于预算控制；速率限制（每秒/每分多少）已由入口限流按 IP 承担，
+ * 两者是不同的防护目的，不混在同一处。
+ *
+ * 累计值不落在这里（见 KeyUsage）——策略是配置，用量是运行时状态，
+ * 分开存避免每次请求都重写策略记录。
+ */
+export interface KeyQuota {
+  /** 每日请求数上限 */
+  dailyRequests?: number;
+  /** 每月请求数上限 */
+  monthlyRequests?: number;
+  /** 每日 Token 上限（prompt+completion） */
+  dailyTokens?: number;
+  /** 每月 Token 上限 */
+  monthlyTokens?: number;
+  /** 每日积分上限（上游实报 credit） */
+  dailyCredit?: number;
+  /** 每月积分上限 */
+  monthlyCredit?: number;
+}
+
+/**
+ * Key 的用量累计（运行时状态，按窗口滚动）。
+ *
+ * 日窗口在本地日切时归零，月窗口在自然月切换时归零——
+ * 与 metrics-history 的 localDayKey 口径一致，避免出现两套「一天」的定义。
+ */
+export interface KeyUsageCounters {
+  requests: number;
+  tokens: number;
+  credit: number;
+}
+
+/** 单个 Key 在某个时刻的用量快照（日 + 月两个窗口） */
+export interface KeyUsage {
+  /** 当前本地日，形如 2026-09-24；与记录不符时视为跨天需归零 */
+  day: string;
+  /** 当前自然月，形如 2026-09；与记录不符时视为跨月需归零 */
+  month: string;
+  daily: KeyUsageCounters;
+  monthly: KeyUsageCounters;
+  /** 最近一次用量更新时间 */
+  updatedAt: number;
+}
+
+/**
  * 网关自建 API key 记录。
  * 明文只在创建时返回一次，库中仅保留 SHA-256 哈希。
  */
@@ -60,6 +112,16 @@ export interface ClientKey {
   lastUsedAt?: number;
   /** 客户端模型名 → 实际上游模型名(客户端无感知的重写,key 级生效) */
   modelAliases?: Record<string, string>;
+  /**
+   * 允许使用的模型 ID 白名单。
+   *
+   * **空数组或未设置 = 不限制（全部模型可用）** —— 这是默认值，
+   * 因为新增 Key 时不应该要求用户先把所有模型勾一遍；否则上游新增模型后
+   * 老 Key 会被静默拦住。
+   */
+  modelIds?: string[];
+  /** 配额策略；未设置表示不限量 */
+  quota?: KeyQuota;
 }
 
 /**

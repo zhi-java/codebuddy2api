@@ -282,6 +282,43 @@ function passthrough(token: string): UpstreamCredential {
  * - 网关 key 登记但所有绑定凭证不可用 → UpstreamCredentialError（调用方返回 502）
  * - 其余情况透传，保持与历史行为一致
  */
+/**
+ * 仅校验网关 Key 是否有效，不解析上游凭证。
+ *
+ * 用途：`/v1/messages/count_tokens` 这类**纯本地计算**的端点。
+ * 它们不需要访问上游，因此不该因为凭证池暂时无可用凭证（全部冷却/过期）
+ * 而失败——那会让客户端在凭证故障时连 token 计数都做不了。
+ * 但仍需校验 Key，避免把算力入口开放给未认证请求。
+ *
+ * @returns 命中的 ClientKey
+ * @throws UnauthorizedError Key 缺失/无效/禁用
+ */
+export async function resolveClientKey(
+  authorization: string | null,
+  env: CredentialEnv,
+): Promise<import('./types').ClientKey> {
+  const raw = authorization?.trim() ?? '';
+  const token = /^Bearer\s+(.+)$/i.exec(raw)?.[1] ?? (raw || undefined);
+
+  if (!token) {
+    throw new UnauthorizedError('Missing Authorization header');
+  }
+
+  const keyPrefix = env.GATEWAY_KEY_PREFIX || 'sk-cb';
+  if (!token.startsWith(`${keyPrefix}-`)) {
+    // 透传模式（ck_ 控制台 key / CLI accessToken）没有对应的 ClientKey 记录，
+    // 调用方按「已认证但无 Key 元数据」处理。
+    throw new UnauthorizedError('count_tokens requires a gateway key');
+  }
+
+  const store = getTokenStore(env);
+  const clientKey = await store.getKeyByHash(await hashApiKey(token));
+  if (!clientKey || !clientKey.enabled) {
+    throw new UnauthorizedError();
+  }
+  return clientKey;
+}
+
 export async function resolveUpstreamCredential(
   authorization: string | null,
   env: CredentialEnv,
@@ -300,12 +337,9 @@ export async function resolveUpstreamCredential(
     return { credential: passthrough(token) };
   }
 
-  const store = getTokenStore(env);
-  const clientKey = await store.getKeyByHash(await hashApiKey(token));
-  if (!clientKey || !clientKey.enabled) {
-    throw new UnauthorizedError();
-  }
+  const clientKey = await resolveClientKey(token, env);
 
+  const store = getTokenStore(env);
   const boundCredentials = (await store.listCredentials()).filter((c) =>
     clientKey.credentialIds.includes(c.id),
   );

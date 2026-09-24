@@ -6,3 +6,6 @@ dist/
 data/
 web/node_modules/
 web/dist/
+
+# 本机增量构建的临时上下文（见 README 或本地脚本）
+buildctx/

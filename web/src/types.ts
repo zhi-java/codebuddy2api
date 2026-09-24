@@ -20,6 +20,34 @@ export interface CredentialSummary {
   hasRefreshToken: boolean;
 }
 
+/** Key 级用量累计（与服务端 KeyUsage 对应） */
+export interface KeyUsageCounters {
+  requests: number;
+  tokens: number;
+  credit: number;
+}
+
+export interface KeyUsage {
+  day: string;
+  month: string;
+  daily: KeyUsageCounters;
+  monthly: KeyUsageCounters;
+  updatedAt: number;
+}
+
+/**
+ * Key 级配额策略。三类总量配额（请求数 / Token / 积分），各有日、月两个窗口；
+ * 未设置的项表示该窗口不限量。
+ */
+export interface KeyQuota {
+  dailyRequests?: number;
+  monthlyRequests?: number;
+  dailyTokens?: number;
+  monthlyTokens?: number;
+  dailyCredit?: number;
+  monthlyCredit?: number;
+}
+
 export interface KeySummary {
   id: string;
   name: string;
@@ -28,6 +56,12 @@ export interface KeySummary {
   createdAt: number;
   lastUsedAt?: number;
   modelAliases?: Record<string, string>;
+  /** 允许的模型 ID；空数组 = 不限制（全部可用），这是默认值 */
+  modelIds: string[];
+  /** 配额策略；空对象 = 不限量 */
+  quota: KeyQuota;
+  /** 当前用量快照（服务端随列表一起返回，免去前端逐 Key 再请求） */
+  usage: KeyUsage;
 }
 
 export interface GatewayState {

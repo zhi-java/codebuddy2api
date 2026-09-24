@@ -7,6 +7,8 @@
  * 供管理台「总览」渲染:流量时序、延迟分位、按模型/接口聚合、错误明细。
  */
 
+import { recordKeyUsage } from './key-usage';
+
 /** 单条请求明细(供管理台「最近请求」列表展示) */
 export interface RequestRecord {
   at: number;
@@ -17,6 +19,15 @@ export interface RequestRecord {
   credentialId?: string;
   /** 命中的上游凭证名(便于日志直读,免去按 ID 反查) */
   credentialName?: string;
+  /**
+   * 命中的网关 Key ID（sk-cb-* 请求才有；透传模式无此字段）。
+   *
+   * 记录它是为了支撑「按 Key 统计」：请求链路早就拿到了 clientKey，
+   * 只是此前没落到记录里，导致无法回答「这个 Key 用了多少」。
+   */
+  keyId?: string;
+  /** 命中的网关 Key 名称（同上，便于列表直读免去反查） */
+  keyName?: string;
   /** 该请求是否发生过凭证故障转移 */
   retried?: boolean;
   /** 失败请求的上游错误码/摘要(成功时缺失) */
@@ -231,6 +242,11 @@ export function recordRequest(record: RequestRecord): void {
   if (record.status >= 400) bucket.errors += 1;
   state.buckets.set(minute, bucket);
 
+  // 注意：请求数**不在此累加**。它由请求链路的准入闸门统一计（见 index.ts 的
+  // enforceKeyPolicy 调用点）——因为本函数可能被故障转移等分支绕过，
+  // 在此计数会漏计失败请求，使配额形同虚设。
+  // 这里只负责 token / 积分，它们要等上游 usage 才拿得到（见 attachTokenUsage）。
+
   // 非流式请求在进到这里之前就已拿到 usage,补记进桶;
   // 流式请求此刻 token 仍缺失,稍后由 attachTokenUsage 补。
   if (record.totalTokens !== undefined) {
@@ -269,6 +285,11 @@ export function attachTokenUsage(
 ): void {
   const delta: { promptTokens?: number; completionTokens?: number; credit?: number } = {};
 
+  const toCount = (value: number): number => {
+    const n = Math.round(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+
   // 积分:独立回填。上游未上报时保持 undefined,便于界面区分「0 积分」与「未上报」。
   if (record.credit === undefined && typeof usage.credit === 'number') {
     record.credit = usage.credit;
@@ -277,15 +298,20 @@ export function attachTokenUsage(
     delta.credit = usage.credit;
   }
 
+  // token 已计过的请求（非流式路径下 recordRequest 先跑，聚合结果的 totalTokens
+  // 在进入本函数前就已设置）在此只需补记 credit。
+  //
+  // 注意：Key 用量的累加**不能**放在这个提前 return 之后——曾因此漏计：
+  // 非流式请求的 token 走不到累加点，Key 统计里 tokens 恒为 0。
+  // 两个窗口的写入统一收敛到末尾的 recordKeyUsage。
   if (record.totalTokens !== undefined) {
+    if (record.keyId && delta.credit !== undefined) {
+      recordKeyUsage(record.keyId, { credit: delta.credit });
+    }
     if (delta.credit !== undefined) emit((target) => target.onUsage(record, delta));
     return;
   }
 
-  const toCount = (value: number): number => {
-    const n = Math.round(value);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  };
   const prompt = toCount(usage.promptTokens);
   const completion = toCount(usage.completionTokens);
   const total = prompt + completion;
@@ -304,6 +330,11 @@ export function attachTokenUsage(
   // 桶可能尚未建立(流先于 recordRequest 结束)或已被 prune(超长流跨出窗口),
   // 两种情况都交给 addTokensToBucket 处理,不会重复累加。
   addTokensToBucket(record, total);
+
+  // Key 用量：token 与 credit 一次写入（两者都到齐时才可能走到这里）
+  if (record.keyId) {
+    recordKeyUsage(record.keyId, { tokens: total, credit: record.credit });
+  }
 
   emit((target) => target.onUsage(record, delta));
 }

@@ -44,6 +44,20 @@ export interface Env {
   /** 管理台前端产物目录(默认 <cwd>/web/dist,Docker 内为 /app/public) */
   PUBLIC_DIR?: string;
   DEBUG?: string;
+  /**
+   * 全局模型别名表（JSON），形如 `{"gpt-5":"glm-5.3","claude-sonnet-4-5":"deepseek-v4-pro"}`。
+   *
+   * 为什么需要：主流 Agent 客户端（Cline / Continue / Claude Code / Cursor）
+   * 靠**模型 ID 匹配内置目录**来获知上下文长度与输出上限。上游私有 ID
+   * （glm-5.3 / hy4-preview-f / kimi-k3-1）不在它们的目录里，于是回落到
+   * 保守默认值（Cline 32k、Continue 32_768），并可能拒绝未知模型。
+   *
+   * 配了别名后，客户端可以传自己认识的 ID（如 `claude-sonnet-4-5`），
+   * 网关在转发前重写成真实上游模型，客户端的内置元数据随之生效。
+   *
+   * 与 Key 级 modelAliases 的关系：Key 级优先（更具体），本表作全局兜底。
+   */
+  MODEL_ALIASES?: string;
 }
 
 // ── System text replacements ──────────────────────────────────────────────

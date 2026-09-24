@@ -28,15 +28,6 @@ const inMemory = ['实时监控窗口（60 分钟）', '日志缓冲（最近 30
 
 const historyRetentionDays = computed(() => archive.value?.retentionDays ?? 400);
 
-/** 补签间隔文案，如「10 分钟、30 分钟、1 小时、2 小时」 */
-const catchupText = computed(() => {
-  const list = config.value?.checkinCatchupMinutes;
-  if (!list || list.length === 0) return '递增间隔';
-  return list
-    .map((m) => (m < 60 ? `${m} 分钟` : `${m / 60} 小时`))
-    .join('、');
-});
-
 const thinkingLabel = computed(() => {
   const mode = config.value?.thinkingMode ?? 'auto';
   return (
@@ -142,11 +133,10 @@ onMounted(async () => {
         </div>
       </div>
       <ul class="endpoints">
-        <li><b class="mono">POST /v1/chat/completions</b><span class="sub">OpenAI 兼容，Bearer 鉴权</span></li>
-        <li><b class="mono">POST /v1/messages</b><span class="sub">Anthropic 协议，x-api-key 鉴权</span></li>
-        <li><b class="mono">POST /v1/responses</b><span class="sub">OpenAI Responses，Bearer 鉴权</span></li>
+        <li><b class="mono">POST /v1/chat/completions</b></li>
+        <li><b class="mono">POST /v1/messages</b></li>
+        <li><b class="mono">POST /v1/responses</b></li>
       </ul>
-      <div class="sub">密钥在「API Keys」创建；公开接入说明见 <a href="/" target="_blank" rel="noopener">首页</a>。</div>
     </NCard>
 
     <div class="grid">
@@ -187,22 +177,17 @@ onMounted(async () => {
             </NButton>
           </li>
         </ul>
-        <div class="sub" style="margin-top: 10px">
-          以上均为只读，修改需调整 <code class="mono">docker-compose.yml</code> 环境变量并重启容器。
-        </div>
       </NCard>
 
       <NCard size="small" title="数据与留存">
-        <div class="sub retention-title">落盘保存（重启不丢）</div>
         <ul class="tags">
           <li v-for="item in persisted" :key="item" class="tag-item">{{ item }}</li>
         </ul>
-        <div class="sub retention-title">仅存于进程内存（重启即清零）</div>
-        <ul class="tags">
+        <ul class="tags" style="margin-top: 8px">
           <li v-for="item in inMemory" :key="item" class="tag-item muted">{{ item }}</li>
         </ul>
         <div class="sub" style="margin-top: 12px">
-          日志长期留存以 <code class="mono">docker logs</code> 为准；用量归档保留 {{ historyRetentionDays }} 天。
+          归档保留 {{ historyRetentionDays }} 天。
         </div>
       </NCard>
 
@@ -210,9 +195,7 @@ onMounted(async () => {
         <div class="session">
           <div>
             <div class="session-title">管理员会话</div>
-            <div class="sub">
-              会话使用 HMAC 签名 cookie，{{ config?.sessionTtlHours ?? 8 }} 小时后自动失效；凭证在落盘前经 AES-GCM 加密。
-            </div>
+            <div class="sub">{{ config?.sessionTtlHours ?? 8 }} 小时后失效</div>
           </div>
           <NButton secondary @click="logout">
             <template #icon><AppIcon name="logout" :size="14" /></template>
@@ -223,10 +206,7 @@ onMounted(async () => {
         <div class="session" style="margin-top: 16px">
           <div>
             <div class="session-title">每日自动签到</div>
-            <div class="sub">
-              开启后 {{ config?.checkinSchedule ?? 'UTC 03:17' }} 对全部启用凭证签到；
-              未成功的按 {{ catchupText }} 补签。
-            </div>
+            <div class="sub">{{ config?.checkinSchedule ?? 'UTC 03:17' }}</div>
           </div>
           <NSwitch
             :value="store.settings?.autoCheckin === true"
@@ -347,15 +327,6 @@ onMounted(async () => {
 }
 
 /* ── 数据留存 ── */
-.retention-title {
-  margin: 14px 0 7px;
-  font-weight: 550;
-}
-
-.retention-title:first-child {
-  margin-top: 0;
-}
-
 .tags {
   list-style: none;
   margin: 0;

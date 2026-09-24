@@ -736,8 +736,22 @@ export interface OpenAIModel {
   /** 常见兼容字段:部分客户端据此做上下文预检(缺失时可能误判) */
   context_window?: number;
   max_model_len?: number;
+  /**
+   * 上下文字段的多家别名。
+   *
+   * OpenAI 规范里**没有**上下文长度字段（只有 id/object/created/owned_by），
+   * 各客户端因此各自约定字段名。实测（读源码）：
+   *   - Cline / Continue 只从 /v1/models 取 **模型 ID**，不读任何长度字段；
+   *   - 但仍有客户端读别名，且声明成本为零、不冲突。
+   * 因此把常见约定一并给出，覆盖更多客户端而不是只满足 vLLM。
+   */
+  context_length?: number;
+  max_input_tokens?: number;
+  max_context_length?: number;
   /** 输出上限;与 context_window 分开,避免客户端把输入窗口误填进 max_tokens */
   max_output_tokens?: number;
+  /** 部分客户端的兜底输出上限字段名 */
+  max_tokens?: number;
   /** 思考档位:上游要求显式传 reasoning_effort 的模型据此补默认值 */
   _defaultEffort?: string;
   _supportedEfforts?: string[];
@@ -770,10 +784,19 @@ function buildModelList(entries: ModelEntry[]): OpenAIModel[] {
     _supportsToolCall: m.supportsToolCall,
     _maxInputTokens: m.maxInputTokens,
     _maxOutputTokens: m.maxOutputTokens,
+    // 上下文长度的多家别名一并给出（各家客户端约定不同，见 interface 注释）
     ...(typeof m.maxInputTokens === 'number'
-      ? { context_window: m.maxInputTokens, max_model_len: m.maxInputTokens }
+      ? {
+          context_window: m.maxInputTokens,
+          max_model_len: m.maxInputTokens,
+          context_length: m.maxInputTokens,
+          max_input_tokens: m.maxInputTokens,
+          max_context_length: m.maxInputTokens,
+        }
       : {}),
-    ...(typeof m.maxOutputTokens === 'number' ? { max_output_tokens: m.maxOutputTokens } : {}),
+    ...(typeof m.maxOutputTokens === 'number'
+      ? { max_output_tokens: m.maxOutputTokens, max_tokens: m.maxOutputTokens }
+      : {}),
     _defaultEffort: m.reasoning?.defaultEffort ?? m.reasoning?.effort,
     _supportedEfforts: m.reasoning?.supportedEfforts,
     _canDisableThinking: m.reasoning?.canDisableThinking,
@@ -812,7 +835,6 @@ export interface ModelsListResponse {
   object: 'list';
   data: OpenAIModel[];
 }
-
 /** Full list in OpenAI format */
 export function getModelsList(): ModelsListResponse {
   return { object: 'list', data: MODEL_LIST };
@@ -932,3 +954,160 @@ export async function fetchUpstreamModels(
   }
 }
 
+
+// ── Anthropic-compatible model list ──────────────────────────────────────
+//
+// Claude Code 等 Anthropic 客户端读的是 Anthropic 自己的格式，与 OpenAI 不兼容：
+//   OpenAI   : { object:"list", data:[ { id, object:"model", owned_by } ] }
+//   Anthropic: { data:[ { id, type:"model", display_name, created_at,
+//                        max_input_tokens, max_tokens, capabilities } ],
+//                first_id, has_more, last_id }
+//
+// 实测证据：claude-code-router（专为 Claude Code 转接而建）即按 Anthropic
+// 格式注入 max_input_tokens / max_tokens。若只回 OpenAI 格式，Anthropic
+// 客户端拿不到上下文长度，只能落到自己的默认值。
+
+/** Anthropic 的模型对象（字段名与官方 /v1/models 对齐） */
+export interface AnthropicModel {
+  id: string;
+  type: 'model';
+  display_name: string;
+  created_at: string;
+  max_input_tokens: number | null;
+  max_tokens: number | null;
+  capabilities: Record<string, unknown>;
+}
+
+/** Anthropic-compatible GET /v1/models response body */
+export interface AnthropicModelsListResponse {
+  data: AnthropicModel[];
+  first_id: string | null;
+  has_more: boolean;
+  last_id: string | null;
+}
+
+/** 固定的模型发布时间：上游未提供，用稳定常量避免每次响应变化。 */
+const ANTHROPIC_MODEL_EPOCH = '1970-01-01T00:00:00Z';
+
+/**
+ * 由模型元数据构造 Anthropic 能力块。
+ *
+ * 只声明**能从上游元数据确证**的能力。上游的 supportsToolCall /
+ * supportsImages / supportsReasoning 直接映射；其余统一给 false，
+ * 而不是乐观地报 true —— 谎报能力会让客户端启用上游不支持的特性。
+ */
+function buildCapabilities(model: OpenAIModel): Record<string, unknown> {
+  const supportsThinking = Boolean(model._supportsReasoning || model._defaultEffort);
+  const support = (value: boolean): { supported: boolean } => ({ supported: value });
+
+  return {
+    batch: support(false),
+    citations: support(false),
+    code_execution: support(false),
+    context_management: {
+      supported: true,
+      ...(typeof model._maxInputTokens === 'number'
+        ? { max_input_tokens: model._maxInputTokens }
+        : {}),
+    },
+    effort: {
+      supported: supportsThinking,
+      ...(Array.isArray(model._supportedEfforts) && model._supportedEfforts.length > 0
+        ? Object.fromEntries(model._supportedEfforts.map((level) => [level, support(true)]))
+        : {}),
+    },
+    image_input: support(Boolean(model._supportsImages)),
+    pdf_input: support(false),
+    structured_outputs: support(false),
+    thinking: {
+      supported: supportsThinking,
+      types: {
+        adaptive: support(false),
+        enabled: support(supportsThinking),
+      },
+    },
+    tool_use: support(model._supportsToolCall !== false),
+  };
+}
+
+/** 把一个模型元数据对象转成 Anthropic 格式 */
+export function toAnthropicModel(model: OpenAIModel): AnthropicModel {
+  const maxInput = typeof model._maxInputTokens === 'number' ? model._maxInputTokens : null;
+  const maxOutput = typeof model._maxOutputTokens === 'number' ? model._maxOutputTokens : null;
+
+  return {
+    id: model.id,
+    type: 'model',
+    display_name: model._name ?? model.id,
+    created_at: ANTHROPIC_MODEL_EPOCH,
+    max_input_tokens: maxInput,
+    max_tokens: maxOutput,
+    capabilities: {
+      ...buildCapabilities(model),
+      // 供 Claude Code 判定 1M 上下文变体（其 `[1m]` 后缀依赖此标记）
+      ...(maxInput !== null
+        ? {
+            context_window: {
+              max_input_tokens: maxInput,
+              supported: true,
+              supports_1m_context: maxInput >= 1_000_000,
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+/** 把模型元数据数组构造成 Anthropic 列表响应 */
+export function toAnthropicModelsList(models: OpenAIModel[]): AnthropicModelsListResponse {
+  const data = models.map(toAnthropicModel);
+  return {
+    data,
+    first_id: data[0]?.id ?? null,
+    has_more: false,
+    last_id: data[data.length - 1]?.id ?? null,
+  };
+}
+
+/**
+ * 浏览器/管理台模型目录：从网关托管凭证中选一个健康凭证实时拉取。
+ *
+ * 与 fetchUpstreamModels 的区别：后者由**调用方传入自己的凭证**（API 客户端路径），
+ * 本函数自行从存储中挑选健康凭证——适用于「用户没有网关 Key 但需要看模型目录」
+ * 的场景：公开模型页（浏览器）与管理台（cookie 会话）。
+ * 不向调用方暴露任何凭证内容。
+ *
+ * 放在本模块（而非 index.ts 或 admin.ts）：两者都需要它，
+ * 置于公共依赖层可避免 index ↔ admin 的循环引用。
+ */
+export async function resolveBrowserModelsList(
+  env: { CREDENTIALS_KV?: unknown; CREDENTIALS_ENC_SECRET?: string; UPSTREAM_CONFIG_URL?: string },
+): Promise<OpenAIModel[]> {
+  try {
+    const { getTokenStore } = await import('./store');
+    const { getCredentialStatus } = await import('./credentials');
+    const credentials = await getTokenStore(env as never).listCredentials();
+    for (const credential of credentials) {
+      const status = getCredentialStatus(credential);
+      if (status !== 'healthy' && status !== 'error') continue;
+
+      const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
+      if (!token) continue;
+
+      const models = await fetchUpstreamModels(
+        {
+          token,
+          userId: credential.userId,
+          kind: credential.kind,
+          credentialId: credential.id,
+        },
+        env,
+        { forceRefresh: true },
+      );
+      if (models?.length) return models;
+    }
+  } catch {
+    // 凭证存储或上游异常时回退静态目录，页面仍可用
+  }
+  return getModelsList().data;
+}

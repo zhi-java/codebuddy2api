@@ -15,6 +15,7 @@
 
 import { createNodeKv } from './node-kv';
 import { flushMetricsHistory, initMetricsHistory } from './metrics-history';
+import { flushKeyUsage, initKeyUsage } from './key-usage';
 import { performAutoCheckins, planNextCheckinRun } from './scheduled';
 import { installProcessGuards } from './process-guards';
 import worker from './index';
@@ -33,6 +34,8 @@ function buildNodeEnv(): Env {
   const kv = createNodeKv({ file: env.DATA_FILE || defaultData });
   // 日/月归档复用同一份持久化存储;未接入时管理台会显示「归档未启用」
   initMetricsHistory(kv);
+  // Key 级用量累计（按 Key 统计与配额判定）：与归档同样的「内存 + 定期落盘」模式
+  initKeyUsage(kv);
 
   const nodeEnv: Env = {
     UPSTREAM_CHAT_COMPLETIONS_URL:
@@ -260,6 +263,7 @@ export function startServer(opts: ServerOptions = {}): { server: HttpServer; env
     console.log(`[codebuddy-gateway] ${signal} received, draining in-flight requests…`);
     // 归档是节流落盘的,停机前补一次,避免丢掉最后 10 秒的日桶增量
     void flushMetricsHistory().catch(() => undefined);
+    void flushKeyUsage().catch(() => undefined);
     server.close(() => process.exit(0));
     // 空闲的 keep-alive 连接会阻止 close 回调,主动断开
     server.closeIdleConnections?.();

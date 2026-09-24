@@ -21,6 +21,10 @@ const entries = [
   'src/protocol/sse.ts', 'src/protocol/anthropic.ts', 'src/protocol/responses.ts',
   'src/upstream-billing.ts', 'src/admin-ui.ts', 'src/scheduled.ts',
   'src/metrics.ts', 'src/logs.ts', 'src/static.ts', 'src/process-guards.ts',
+  // 用例 21 需要直接验证估算口径（system/tools/CJK 分档）
+  'src/token-estimate.ts',
+  // 用例 22 需要验证 Key 用量累计（配额与统计的数据源）
+  'src/key-usage.ts',
 ];
 
 await Promise.all(

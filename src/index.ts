@@ -3,10 +3,16 @@ import {
   getModelById,
   findModelMetadata,
   fetchUpstreamModels,
+  toAnthropicModelsList,
+  toAnthropicModel,
+  resolveBrowserModelsList,
   OpenAIModel,
 } from './models';
+import { estimateInputTokens } from './token-estimate';
+import { checkKeyQuota, recordKeyUsage } from './key-usage';
 import {
   resolveUpstreamCredential,
+  resolveClientKey,
   markCredentialFailure,
   markCredentialSuccess,
   getCredentialStatus,
@@ -129,24 +135,95 @@ export default {
       if (wantsHtml(request)) {
         return htmlResponse(renderPublicModelsPage(await resolveBrowserModelsList(env)));
       }
-      return withCredential(request, env, async (credential) =>
-        jsonResponse(await resolveModelsList(credential, env), env),
-      );
+      // 按协议分流：Anthropic 客户端读的字段名与 OpenAI 完全不同
+      // （max_input_tokens/max_tokens/type/display_name vs id/object/owned_by），
+      // 只回 OpenAI 格式会让 Claude Code 等拿不到上下文长度而落到默认值。
+      const anthropic = isAnthropicClient(request);
+      return withCredential(request, env, async (credential) => {
+        const models = await resolveModelsList(credential, env);
+        if (anthropic) {
+          return jsonResponse(toAnthropicModelsList(models.data), env);
+        }
+        return jsonResponse(models, env);
+      });
+    }
+
+    // ── Route: POST /v1/messages/count_tokens — Anthropic token counting ──
+    //
+    // Claude Code 用它做上下文管理（决定何时压缩）。上游没有这个端点，
+    // 因此本地估算，不产生上游调用与费用。
+    //
+    // 只校验网关 Key、**不解析上游凭证**：这是纯本地计算，不该因为凭证池
+    // 暂时无可用凭证（全部冷却/过期）而失败——否则凭证故障时客户端连
+    // token 计数都做不了。但仍校验 Key，避免向未认证请求开放算力入口。
+    if (request.method === 'POST' && path === '/v1/messages/count_tokens') {
+      const authHeader = request.headers.get('authorization')
+        ?? (request.headers.get('x-api-key') ? `Bearer ${request.headers.get('x-api-key')}` : null);
+      try {
+        await resolveClientKey(authHeader, env);
+      } catch (err: unknown) {
+        if (err instanceof UnauthorizedError) {
+          return jsonResponse(
+            {
+              type: 'error',
+              error: { type: 'authentication_error', message: err.message || 'Invalid API key' },
+            },
+            env,
+            401,
+          );
+        }
+        throw err;
+      }
+
+      let body: Record<string, unknown> = {};
+      try {
+        const parsed = (await request.json()) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          body = parsed as Record<string, unknown>;
+        }
+      } catch {
+        return jsonResponse(
+          { type: 'error', error: { type: 'invalid_request_error', message: 'Invalid JSON body' } },
+          env,
+          400,
+        );
+      }
+
+      // 官方口径：messages、system prompt、tools 的总和
+      const inputTokens = estimateInputTokens({
+        messages: body['messages'],
+        system: body['system'],
+        tools: body['tools'],
+      });
+
+      return jsonResponse({ input_tokens: inputTokens }, env);
     }
 
     // ── Route: GET /v1/models/:id | /models/:id — single model ───────
     const modelDetailMatch = path.match(/^\/(?:v1\/)?models\/(.+)$/);
     if (request.method === 'GET' && modelDetailMatch) {
       const requestedId = modelDetailMatch[1];
+      const anthropicDetail = isAnthropicClient(request);
       return withCredential(request, env, async (credential) => {
         const upstreamModels = await fetchUpstreamModels(credential, env);
         const model = findModel(upstreamModels, requestedId)
           ?? getModelById(requestedId);
 
         if (!model) {
+          // Anthropic 的错误体形状与 OpenAI 不同（type + error.type/message）
+          if (anthropicDetail) {
+            return jsonResponse(
+              {
+                type: 'error',
+                error: { type: 'not_found_error', message: `Model not found: ${requestedId}` },
+              },
+              env,
+              404,
+            );
+          }
           return jsonResponse({ error: 'Model not found' }, env, 404);
         }
-        return jsonResponse(model, env);
+        return jsonResponse(anthropicDetail ? toAnthropicModel(model) : model, env);
       });
     }
 
@@ -191,6 +268,37 @@ export default {
 function wantsHtml(request: Request): boolean {
   const accept = request.headers.get('accept') ?? '';
   return accept.includes('text/html') || accept.includes('application/xhtml+xml');
+}
+
+/**
+ * 判定请求是否来自 Anthropic 客户端，用于 /v1/models 的响应格式分流。
+ *
+ * 依据（按可靠度排序）：
+ *   1. `anthropic-version` 头 —— Anthropic 官方 SDK 必带（如 2023-06-01）；
+ *   2. `x-api-key` 头 —— Anthropic 协议用 x-api-key 而非 Authorization；
+ *   3. `anthropic-beta` 头 —— 启用 beta 特性时携带；
+ *   4. User-Agent 含 claude —— 兜底，覆盖未带上述头但明确是 Claude 系客户端的场景。
+ *
+ * 注意：不把 `x-api-key` 单独作为判据。部分 OpenAI 兼容客户端也用它传密钥，
+ * 误判会让它们收到 Anthropic 格式而解析失败。因此要求 x-api-key 与其他
+ * 信号之一同时成立，或直接命中 anthropic-version（最强信号）。
+ */
+function isAnthropicClient(request: Request): boolean {
+  const anthropicVersion = request.headers.get('anthropic-version');
+  if (anthropicVersion) return true;
+
+  if (request.headers.get('anthropic-beta')) return true;
+
+  const userAgent = (request.headers.get('user-agent') ?? '').toLowerCase();
+  if (userAgent.includes('claude')) return true;
+
+  // x-api-key 佐证：仅当同时没有 Authorization（OpenAI 侧标准头）时成立，
+  // 避免把同时带两者的混用客户端误判为 Anthropic。
+  if (request.headers.get('x-api-key') && !request.headers.get('authorization')) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -331,6 +439,26 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
   let attempts = 0;
   let usedCredentialId: string | undefined;
   let usedCredentialName: string | undefined;
+  // 命中的网关 Key：用于按 Key 统计与配额累计（透传模式无 Key，保持 undefined）
+  let usedKeyId: string | undefined;
+  let usedKeyName: string | undefined;
+
+  // ── Key 级策略前置校验 ──────────────────────────────────────────────
+  //
+  // 必须在凭证解析**之前**：模型绑定与配额是「这个 Key 能不能用」的问题，
+  // 与「有没有可用上游凭证」无关。若放在 withCredential 回调内，凭证池一旦
+  // 全部冷却/过期，策略校验就会被凭证错误抢先返回而完全失效——
+  // 表现为配额形同虚设、白名单外的模型也能打到上游。
+  {
+    const gateKey = await resolveClientKeySafely(request, env);
+    const denied = enforceKeyPolicy(gateKey, requestedModel, env);
+    if (denied) return denied;
+    // 请求计数在此累加（而非在 recordRequest）：
+    // ① 只对真正的推理端点计数——/v1/models 等查询不该消耗配额；
+    // ② 只计一次——recordRequest 之外还有故障转移等分支会提前 return，
+    //    若依赖它计数，失败请求会漏计，客户端可借此绕过配额上限。
+    if (gateKey) recordKeyUsage(gateKey.id, { countRequest: true });
+  }
 
   // 记录对象先建好:流式请求的 usage 由上游在流末尾给出,需要等响应流结束后
   // 由 usageTap 回填,所以不能在 handler 返回时一次性构造。
@@ -361,9 +489,16 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
     attempts += 1;
     usedCredentialId = credential.credentialId;
     usedCredentialName = credential.credentialName;
+    usedKeyId = clientKey?.id;
+    usedKeyName = clientKey?.name;
+    // 同步写进 record：onUsage 回调在本回调**内部**就可能触发（非流式路径边
+    // 读流边解析 usage），而 record.keyId 原先只在外层赋值——那时回调已返回，
+    // 导致 attachTokenUsage 读到的 keyId 恒为 undefined，Key 统计里 token 始终为 0。
+    record.keyId = usedKeyId;
+    record.keyName = usedKeyName;
     // Rewrite body(按命中 Key 应用 model 别名,再统一改写/强制流式)
     const prepared = payloadObject
-      ? applyModelAlias(payloadObject, clientKey)
+      ? applyModelAlias(payloadObject, clientKey, env)
       : undefined;
     const bodyStr = prepared
       ? JSON.stringify(await prepareChatPayload(prepared, env, credential))
@@ -411,6 +546,8 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
   record.durationMs = Date.now() - startedAt;
   record.credentialId = usedCredentialId;
   record.credentialName = usedCredentialName;
+  record.keyId = usedKeyId;
+  record.keyName = usedKeyName;
   record.retried = attempts > 1;
   if (response.status >= 400) record.error = requestErrorSummaries.get(request);
   recordRequest(record);
@@ -486,10 +623,15 @@ async function handleQuota(request: Request, env: Env): Promise<Response> {
   const body = requestBody.trim() ? requestBody : '{}';
   let usedCredentialId: string | undefined;
   let usedCredentialName: string | undefined;
+  // 命中的网关 Key：用于按 Key 统计与配额累计（透传模式无 Key，保持 undefined）
+  let usedKeyId: string | undefined;
+  let usedKeyName: string | undefined;
 
-  const response = await withCredential(request, env, async (credential) => {
+  const response = await withCredential(request, env, async (credential, clientKey) => {
     usedCredentialId = credential.credentialId;
     usedCredentialName = credential.credentialName;
+    usedKeyId = clientKey?.id;
+    usedKeyName = clientKey?.name;
     applyCredentialHeaders(upstreamHeaders, credential);
 
     try {
@@ -561,6 +703,9 @@ async function handleProtocolEndpoint(
   let attempts = 0;
   let usedCredentialId: string | undefined;
   let usedCredentialName: string | undefined;
+  // 命中的网关 Key：用于按 Key 统计与配额累计（透传模式无 Key，保持 undefined）
+  let usedKeyId: string | undefined;
+  let usedKeyName: string | undefined;
 
   // 同 chat 链路:usage 在流末尾才到,先建记录对象由旁路回填
   const record: RequestRecord = {
@@ -588,12 +733,17 @@ async function handleProtocolEndpoint(
     attempts += 1;
     usedCredentialId = credential.credentialId;
     usedCredentialName = credential.credentialName;
+    usedKeyId = clientKey?.id;
+    usedKeyName = clientKey?.name;
+    // 同 chat 链路：onUsage 可能在本回调内触发，keyId 必须此刻就位
+    record.keyId = usedKeyId;
+    record.keyName = usedKeyName;
     // 2. 目标协议请求 → 上游 chat payload(应用 Key 级模型别名)
     const chatPayload =
       kind === 'anthropic'
         ? anthropicRequestToChat(body)
         : responsesRequestToChat(body);
-    applyModelAlias(chatPayload, clientKey);
+    applyModelAlias(chatPayload, clientKey, env);
 
     // 3. 统一改写:模型名规范化 + 系统提示品牌文本替换 + 思考档位映射 + 字段清洗
     await prepareChatPayload(chatPayload, env, credential);
@@ -700,6 +850,8 @@ async function handleProtocolEndpoint(
   record.durationMs = Date.now() - startedAt;
   record.credentialId = usedCredentialId;
   record.credentialName = usedCredentialName;
+  record.keyId = usedKeyId;
+  record.keyName = usedKeyName;
   record.retried = attempts > 1;
   if (response.status >= 400) record.error = requestErrorSummaries.get(request);
   recordRequest(record);
@@ -760,17 +912,138 @@ function buildUpstreamHeaders(request: Request): Headers {
 // ── Model alias ─────────────────────────────────────────────────────────────
 
 /**
- * 按命中的网关 Key 应用模型别名重写(客户端无感知)。
+ * 解析全局模型别名表（环境变量 MODEL_ALIASES 的 JSON）。
+ *
+ * 每次调用重新解析：环境变量在进程生命周期内不变，但测试会注入不同 env 对象，
+ * 缓存会串味。解析成本可忽略（常量级，且只在有 model 字段的请求上触发）。
+ * 解析失败视为未配置——不因为一个格式错误的环境变量让整个网关不可用。
+ */
+function globalModelAliases(env: Env): Record<string, string> | undefined {
+  const raw = env.MODEL_ALIASES;
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [from, to] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof to === 'string' && to.trim()) out[from] = to.trim();
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 尽力解析命中的网关 Key，用于请求前置的策略校验。
+ *
+ * 与 enforceKeyPolicy 的容错取向一致：**解析失败一律返回 undefined**
+ * （视为「无 Key 约束」），而不是抛错短路请求。
+ *
+ * 理由：这里只是策略校验的前置步骤，真正的鉴权由 withCredential 负责。
+ * 若在此处因 Key 无效/存储异常就抛错，会改变原有的错误语义与状态码，
+ * 且让策略校验变成绕过鉴权的旁路。宁可漏校验（后续 withCredential 会拒），
+ * 也不要错拒或改变鉴权行为。
+ */
+async function resolveClientKeySafely(
+  request: Request,
+  env: Env,
+): Promise<import('./types').ClientKey | undefined> {
+  const authHeader = request.headers.get('authorization')
+    ?? (request.headers.get('x-api-key') ? `Bearer ${request.headers.get('x-api-key')}` : null);
+  if (!authHeader) return undefined;
+  try {
+    return await resolveClientKey(authHeader, env);
+  } catch {
+    // 透传凭证（ck_/JWT）会走这里；无效 Key 也在此静默略过，交由 withCredential 处理
+    return undefined;
+  }
+}
+
+/**
+ * 网关侧准入闸门：模型绑定 + 配额。
+ *
+ * 在请求进入上游**之前**执行，超限直接拒绝——不消耗上游调用与费用。
+ *
+ * @returns 拒绝时返回响应；通过时返回 undefined
+ */
+function enforceKeyPolicy(
+  clientKey: import('./types').ClientKey | undefined,
+  requestedModel: string,
+  env: Env,
+): Response | undefined {
+  // 透传模式（无 ClientKey）不受 Key 级策略约束：用户直接用自己的上游凭证，
+  // 没有「这个 Key 能用什么」的概念。
+  if (!clientKey) return undefined;
+
+  // ── 模型绑定 ────────────────────────────────────────────────────────
+  // 空数组/未设置 = 不限制（默认全部可用）。显式配置后才校验。
+  const allowed = clientKey.modelIds;
+  if (Array.isArray(allowed) && allowed.length > 0) {
+    const normalized = normalizeModelId(requestedModel);
+    const permitted = allowed.some((id) => normalizeModelId(id) === normalized);
+    if (!permitted) {
+      return jsonResponse(
+        {
+          error: {
+            type: 'invalid_request_error',
+            code: 'model_not_allowed',
+            message: `该 Key 未授权使用模型 "${requestedModel}"。可用模型：${allowed.join('、')}`,
+          },
+        },
+        env,
+        403,
+      );
+    }
+  }
+
+  // ── 配额 ────────────────────────────────────────────────────────────
+  const verdict = checkKeyQuota(clientKey.id, clientKey.quota);
+  if (!verdict.allowed) {
+    return jsonResponse(
+      {
+        error: {
+          type: 'rate_limit_error',
+          code: 'quota_exceeded',
+          message: verdict.message ?? '该 Key 已达配额上限',
+          exceeded: verdict.exceeded,
+        },
+      },
+      env,
+      429,
+    );
+  }
+
+  return undefined;
+}
+
+/**
+ * 应用模型别名重写(客户端无感知)。
+ *
+ * 查找顺序：**Key 级别名优先**（更具体），全局 MODEL_ALIASES 兜底。
  * 匹配基于规范化后的模型名(自动剥 [1m] 等后缀),保证 'glm-5.2[1m]' 命中别名 'glm-5.2'。
  * 直接修改传入对象;无别名配置时不产生任何变化。
+ *
+ * 为什么需要全局别名：主流 Agent 客户端靠模型 ID 匹配内置目录来获知上下文
+ * 长度（Cline→models.dev catalog、Continue→内置常量、Claude Code→Anthropic 目录）。
+ * 上游私有 ID 不在其中，会被回落到 32k 级别的保守默认值。配了别名后客户端
+ * 可传自己认识的 ID，网关转发前重写为真实上游模型。
  */
 function applyModelAlias(
   payload: Record<string, unknown>,
   clientKey: import('./types').ClientKey | undefined,
+  env?: Env,
 ): Record<string, unknown> {
-  const aliases = clientKey?.modelAliases;
   const rawModel = payload['model'];
-  if (!aliases || typeof rawModel !== 'string') return payload;
+  if (typeof rawModel !== 'string') return payload;
+
+  const keyAliases = clientKey?.modelAliases;
+  const aliases = keyAliases && Object.keys(keyAliases).length > 0
+    ? keyAliases
+    : env
+      ? globalModelAliases(env)
+      : undefined;
+  if (!aliases) return payload;
 
   const mapped = aliases[normalizeModelId(rawModel)] ?? aliases[rawModel];
   if (typeof mapped === 'string' && mapped) {
@@ -1358,40 +1631,6 @@ function findModel(models: OpenAIModel[] | undefined, id: string): OpenAIModel |
   if (!models) return undefined;
   const normalizedId = normalizeModelId(decodeURIComponent(id));
   return models.find((m) => m.id === normalizedId);
-}
-
-/**
- * 浏览器模型目录：从网关托管凭证中选择一个健康凭证实时拉取。
- * 页面不要求用户在地址栏额外携带 Authorization，也不会向页面暴露凭证。
- */
-async function resolveBrowserModelsList(env: Env): Promise<OpenAIModel[]> {
-  try {
-    const credentials = await getTokenStore(env).listCredentials();
-    for (const credential of credentials) {
-      const status = getCredentialStatus(credential);
-      if (status !== 'healthy' && status !== 'error') continue;
-
-      const token = credential.kind === 'ck_apikey'
-        ? credential.apiKey
-        : credential.accessToken;
-      if (!token) continue;
-
-      const models = await fetchUpstreamModels(
-        {
-          token,
-          userId: credential.userId,
-          kind: credential.kind,
-          credentialId: credential.id,
-        },
-        env,
-        { forceRefresh: true },
-      );
-      if (models?.length) return models;
-    }
-  } catch {
-    // 凭证存储或上游异常时回退静态目录,页面仍可用。
-  }
-  return getModelsList().data;
 }
 
 /**

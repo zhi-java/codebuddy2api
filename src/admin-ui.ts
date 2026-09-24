@@ -203,7 +203,6 @@ const PUBLIC_CSS = `
     letter-spacing:-.035em; font-weight:680;
   }
   .hero h1 em { font-style:normal; color:var(--accent); }
-  .hero p { margin:16px 0 0; max-width:64ch; color:var(--text-2); font-size:16px; }
   .hero-cta { display:flex; gap:10px; flex-wrap:wrap; margin-top:28px; }
 
   .pill {
@@ -303,20 +302,6 @@ const PUBLIC_CSS = `
   }
   .copy:hover { color:var(--text); border-color:var(--accent); }
   .copy.done { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
-
-  /* ── 接入步骤 ── */
-  .steps { list-style:none; margin:0; padding:0; display:grid; gap:12px;
-    grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); counter-reset:step; }
-  .step {
-    display:flex; gap:14px; padding:18px 20px; background:var(--surface);
-    border:1px solid var(--border-soft); border-radius:var(--radius-page);
-  }
-  .step-no {
-    width:26px; height:26px; flex:none; border-radius:50%; display:grid; place-items:center;
-    font-size:12.5px; font-weight:650; color:var(--accent); background:var(--accent-soft);
-  }
-  .step b { display:block; font-size:14px; font-weight:600; margin-bottom:3px; }
-  .step span { color:var(--text-2); font-size:13px; }
 
   /* ── 页脚 ── */
   .foot {
@@ -612,7 +597,6 @@ export function renderLandingPage(status: LandingStatus): string {
       <i class="dot"></i>${running ? '服务运行中' : '服务状态未知'}${running ? ` · 已运行 ${escapeHtml(formatUptime(status.uptimeMs))}` : ''}
     </span>
     <h1>一套上游凭证<br>接入<em>任意主流客户端</em></h1>
-    <p>网关托管上游凭证并自动续期。</p>
     <div class="hero-cta">
       <a class="btn btn-primary" href="/admin">进入管理控制台</a>
     </div>
@@ -630,7 +614,6 @@ export function renderLandingPage(status: LandingStatus): string {
     <div class="stat">
       <span class="stat-label">模型目录</span>
       <b class="stat-value">${status.modelCount ? status.modelCount.toLocaleString('en-US') : '—'}</b>
-      <span class="stat-hint">可用模型数</span>
     </div>
   </section>
 
@@ -642,35 +625,6 @@ export function renderLandingPage(status: LandingStatus): string {
       ${PROTOCOLS.map((spec) => renderProtocolCard(spec)).join('\n')}
     </div>
     ${renderCodePanel(status.sampleModel)}
-  </section>
-
-  <section class="section" id="quickstart">
-    <div class="section-head">
-      <h2>三步接入</h2>
-    </div>
-    <ol class="steps">
-      <li class="step">
-        <span class="step-no">1</span>
-        <div>
-          <b>添加上游凭证</b>
-          <span>录入 CodeBuddy 凭证，网关负责刷新、额度与签到。</span>
-        </div>
-      </li>
-      <li class="step">
-        <span class="step-no">2</span>
-        <div>
-          <b>签发网关 Key</b>
-          <span>创建 <code class="mono">sk-cb-*</code> Key 并绑定凭证池，上游凭证不出网关。</span>
-        </div>
-      </li>
-      <li class="step">
-        <span class="step-no">3</span>
-        <div>
-          <b>切换 base_url</b>
-          <span>指向本网关即获得多凭证故障转移。</span>
-        </div>
-      </li>
-    </ol>
   </section>
 </main>
 

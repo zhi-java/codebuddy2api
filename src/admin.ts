@@ -14,13 +14,15 @@ import {
   markCredentialSuccess,
 } from './credentials';
 import { getTokenStore, hashApiKey } from './store';
+import { resolveBrowserModelsList } from './models';
+import { getKeyUsage, deleteKeyUsage, resetKeyUsage } from './key-usage';
 import { renderLoginPage } from './admin-ui';
 import { serveAppShell, serveStaticFile } from './static';
 import { fetchCheckinStatus, fetchCredentialQuota, fetchDailyCheckin } from './upstream-billing';
 import { CATCHUP_DELAYS_MIN, CHECKIN_UTC_HOUR, CHECKIN_UTC_MINUTE } from './scheduled';
 import { createSseReader, parseSseJsonChunks } from './protocol/sse';
 import { prepareChatPayload } from './payload';
-import type { ClientKey, Credential, CredentialKind } from './types';
+import type { ClientKey, Credential, CredentialKind, KeyQuota } from './types';
 import { Env, jsonResponse, fetchWithTimeout, resolveRateLimit } from './utils';
 import { checkRateLimit } from './rate-limiter';
 import { metricsSnapshot } from './metrics';
@@ -249,6 +251,30 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
   const store = getTokenStore(env);
 
   // ── 运行配置(只读,供「设置」页展示;不含任何密钥) ────────────
+  /**
+   * 管理台的可用模型清单（供 Key 的模型绑定多选）。
+   *
+   * 为什么不复用 GET /v1/models：那个端点面向 **API 客户端**，要求网关 Key 鉴权。
+   * 管理台用的是 cookie 会话，直接请求它会拿到 401，而前端 api.ts 对 401 的
+   * 处理是整页跳转 /admin —— 表现为「打开 Key 页面就被弹回总览」。
+   * 因此提供这个走 cookie 鉴权的独立端点。
+   *
+   * 用健康凭证实时拉取（与公开模型页同一策略），失败时回退内置快照，
+   * 保证管理台在凭证不可用时仍能拿到一份模型清单。
+   */
+  /**
+   * 管理台的可用模型清单（供 Key 的模型绑定多选）。
+   *
+   * 为什么不复用 GET /v1/models：那个端点面向 **API 客户端**，要求网关 Key 鉴权。
+   * 管理台用的是 cookie 会话，直接请求它会拿到 401，而前端 api.ts 对 401 的处理
+   * 是整页跳转 /admin —— 表现为「打开 Key 页面就被弹回总览」。
+   * 本端点走 cookie 鉴权，内部用健康凭证代拉（不暴露凭证）。
+   */
+  if (path === '/admin/api/models' && request.method === 'GET') {
+    const models = await resolveBrowserModelsList(env);
+    return jsonResponse({ data: models.map((m) => ({ id: m.id, name: m._name ?? m.id })) }, env);
+  }
+
   if (path === '/admin/api/config' && request.method === 'GET') {
     const limit = resolveRateLimit(env);
     return jsonResponse(
@@ -499,11 +525,22 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
         : [],
       enabled: true,
       createdAt: Date.now(),
+      // 创建时不传即「不限模型 / 不限量」——不给新 Key 预设限制，
+      // 避免用户配完发现模型是被默认挡住的
+      ...(parseModelIds(body.modelIds) ? { modelIds: parseModelIds(body.modelIds) } : {}),
+      ...(parseQuota(body.quota) ? { quota: parseQuota(body.quota) } : {}),
     };
 
     await store.saveKey(key);
     // 明文仅在此处返回一次，库中只存哈希
     return jsonResponse({ data: { ...summarizeKey(key), plaintext } }, env, 201);
+  }
+
+  // 用量重置单独匹配：路径后缀是 /reset-usage，与上面的 /bind 后缀不共用正则
+  const resetMatch = /^\/admin\/api\/keys\/([^/]+)\/reset-usage$/.exec(path);
+  if (resetMatch && request.method === 'POST') {
+    await resetKeyUsage(decodeURIComponent(resetMatch[1]));
+    return jsonResponse({ ok: true }, env);
   }
 
   const keyMatch = /^\/admin\/api\/keys\/([^/]+)(\/bind)?$/.exec(path);
@@ -539,12 +576,33 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
           ? (body.modelAliases as Record<string, string>)
           : existing.modelAliases,
       };
+
+      // 模型绑定：传了该字段就覆盖（空数组=取消限制），没传则保持原值
+      const modelIds = parseModelIds(body.modelIds);
+      if (modelIds !== undefined) updated.modelIds = modelIds;
+
+      // 配额：同上语义
+      const quota = parseQuota(body.quota);
+      if (quota !== undefined) {
+        // 全空表示取消所有配额限制，直接删字段而不是留空对象
+        if (Object.keys(quota).length === 0) delete updated.quota;
+        else updated.quota = quota;
+      }
+
       await store.saveKey(updated);
       return jsonResponse({ data: summarizeKey(updated) }, env);
     }
 
     if (request.method === 'DELETE') {
       await store.deleteKey(id);
+      // 一并清掉用量记录，否则重建同名 Key 会继承旧计数
+      await deleteKeyUsage(id);
+      return jsonResponse({ ok: true }, env);
+    }
+
+    // 重置用量（保留配额策略，只把累计值清零）
+    if (request.method === 'POST' && resetMatch) {
+      await resetKeyUsage(id);
       return jsonResponse({ ok: true }, env);
     }
   }
@@ -962,7 +1020,58 @@ function summarizeKey(key: ClientKey) {
     createdAt: key.createdAt,
     lastUsedAt: key.lastUsedAt,
     modelAliases: key.modelAliases,
+    // 空数组表示不限模型；前端据此显示「全部模型」
+    modelIds: key.modelIds ?? [],
+    quota: key.quota ?? {},
+    // 当前用量快照：列表页卡片直接展示，免去前端逐 Key 再请求
+    usage: getKeyUsage(key.id),
   };
+}
+
+/**
+ * 解析并校验模型 ID 白名单。
+ *
+ * 返回 `string[]` 或 `undefined`（表示「未提供该字段，保持原值」）。
+ * 空数组是**有效值**，语义为「不限制」——因此不能与 undefined 混为一谈：
+ * 前者是用户主动清空限制，后者是本次请求没带这个字段。
+ */
+function parseModelIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map((v) => v.trim());
+}
+
+const QUOTA_FIELDS = [
+  'dailyRequests', 'monthlyRequests',
+  'dailyTokens', 'monthlyTokens',
+  'dailyCredit', 'monthlyCredit',
+] as const;
+
+/**
+ * 解析配额策略。
+ *
+ * 只接受非负有限数；其余（含 null / 空字符串）视为**清除该项限制**。
+ * 负数与 NaN 会让「已用 >= 上限」的比较失去意义，直接丢弃而不是钳到 0——
+ * 钳到 0 会让 Key 立刻被自己的配置锁死，那不是用户的意图。
+ */
+function parseQuota(value: unknown): KeyQuota | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const quota: KeyQuota = {};
+  let hasAny = false;
+
+  for (const field of QUOTA_FIELDS) {
+    const raw = record[field];
+    if (raw === undefined || raw === null || raw === '') continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) {
+      quota[field] = Math.floor(n);
+      hasAny = true;
+    }
+  }
+
+  // 全部字段被清空时返回空对象（表示不限量），而不是 undefined——
+  // 这样调用方能把「用户主动取消所有配额」与「本次没提交配额字段」区分开。
+  return hasAny ? quota : {};
 }
 
 /** 校验 modelAliases 结构(字符串→字符串映射) */
