@@ -17,6 +17,7 @@
 
 import { getTokenStore } from './store';
 import { fetchCheckinStatus, fetchDailyCheckin } from './upstream-billing';
+import { profileFor } from './region';
 import { pushLog } from './logs';
 import type { Credential } from './types';
 
@@ -125,6 +126,14 @@ export async function performAutoCheckins(env: ScheduledEnv): Promise<AutoChecki
 
   // 顺序执行,避免瞬时并发打满上游
   for (const credential of candidates) {
+    // 国际版无「Buddy 加油站」活动(该能力由区域档案的 features 声明)。
+    // 在此跳过而不是进循环后抛错:否则每个国际版凭证每轮都会产生一条
+    // 无意义的失败记录,还会被计入 pending 触发无谓的补签重试。
+    if (!profileFor(credential.region).features.dailyCheckin) {
+      report.skipped += 1;
+      continue;
+    }
+
     try {
       // ── 先查状态:活动未开放则不产生任何领取调用 ──
       const status = await fetchCheckinStatus(credential, env as never);

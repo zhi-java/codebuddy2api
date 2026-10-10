@@ -10,6 +10,17 @@
 /** 上游凭证类型 */
 export type CredentialKind = 'ck_apikey' | 'cli_oauth';
 
+/**
+ * 上游区域：决定该凭证被打到哪一套上游。
+ *
+ * 网关可同时持有两类凭证并行服务，因此区域是凭证级属性而非全局配置。
+ * **必须与令牌自身的签发方一致**（国内令牌配 cn、国际令牌配 intl）——
+ * 跨区使用必然 401，且会让故障转移在两区之间横跳，把单区故障放大成全池不可用。
+ *
+ * 缺省视为 'cn'：存量凭证无需迁移。
+ */
+export type Region = 'cn' | 'intl';
+
 /** 凭证运行状态（派生字段，不持久化） */
 export type CredentialStatus = 'healthy' | 'expired' | 'cooling' | 'disabled' | 'error';
 
@@ -20,6 +31,8 @@ export interface Credential {
   id: string;
   name: string;
   kind: CredentialKind;
+  /** 上游区域；未设置按国内版处理（存量凭证） */
+  region?: Region;
 
   /** kind=ck_apikey 时使用 */
   apiKey?: string;
@@ -134,6 +147,13 @@ export interface UpstreamCredential {
   userId?: string;
   /** 来源类型，便于日志与排障 */
   kind: CredentialKind | 'passthrough';
+  /**
+   * 该凭证的上游区域。转发链路据此选择端点与渠道指纹头。
+   *
+   * 透传模式下由令牌自身推断(国际版令牌带 codebuddy.ai 的 iss),
+   * 托管模式下取凭证记录上的 region。
+   */
+  region?: Region;
   /** 命中的凭证 ID（透传模式为空） */
   credentialId?: string;
   /** 命中的凭证名，供日志直读（避免按 ID 反查；透传模式为空） */

@@ -4,8 +4,9 @@
  */
 
 import { extractUserIdFromJwt } from './crypto';
+import { endpointUrl, profileFor } from './region';
 import { normalizeModelId } from './utils';
-import type { UpstreamCredential } from './types';
+import type { Region, UpstreamCredential } from './types';
 
 // ── Raw model entries from the API ────────────────────────────────────────
 
@@ -840,6 +841,19 @@ export function getModelsList(): ModelsListResponse {
   return { object: 'list', data: MODEL_LIST };
 }
 
+/**
+ * 按区域取静态快照。
+ *
+ * 现有快照是国内版采集的（含 hy4-preview / hunyuan 等混元系模型）。国际版目录
+ * 未经采集，因此返回空列表 —— 上游不可用时给出一个已知错误的目录，
+ * 比给空更糟：客户端会把不存在的模型写进配置且不自知。国际版一旦有可用
+ * 凭证，走的是上游实时目录，不受影响。
+ */
+export function getRegionModelsList(region: Region): ModelsListResponse {
+  if (region === 'intl') return { object: 'list', data: [] };
+  return { object: 'list', data: MODEL_LIST };
+}
+
 /** Lookup a single model by ID (returns undefined if not found) */
 export function getModelById(id: string): OpenAIModel | undefined {
   const normalizedId = normalizeModelId(id);
@@ -850,23 +864,6 @@ export function getModelById(id: string): OpenAIModel | undefined {
 
 
 // ── Dynamic model discovery (client credential pass-through) ──────────────
-
-/**
- * 上游配置接口地址。客户端凭证透传后由网关补齐必要的身份头。
- */
-const DEFAULT_UPSTREAM_CONFIG_URL = 'https://copilot.tencent.com/v3/config';
-
-/**
- * 上游要求客户端带上 IDE/CLI 身份头,否则返回 400（check ua）。
- * 这些是可公开的固定指纹头,不含任何用户凭据。
- */
-const CONFIG_FINGERPRINT_HEADERS: Record<string, string> = {
-  'user-agent': 'CLI/2.107.0 CodeBuddy/2.107.0',
-  'x-ide-type': 'CLI',
-  'x-ide-name': 'CLI',
-  'x-ide-version': '2.107.0',
-  'accept': 'application/json',
-};
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 分钟
 const CACHE_MAX_ENTRIES = 50;
@@ -880,9 +877,9 @@ interface CacheEntry {
 /** 按客户端凭证指纹缓存,多租户互不影响 */
 const modelCache = new Map<string, CacheEntry>();
 
-function cacheKeyFor(token: string, userId: string): string {
-  // 只取 token 首尾片段做指纹,避免明文缓存完整凭据
-  return `${token.length}:${token.slice(0, 8)}:${token.slice(-8)}:${userId}`;
+function cacheKeyFor(token: string, userId: string, region: string): string {
+  // 只取 token 首尾片段做指纹,避免明文缓存完整凭据；含区域以隔离两个目录
+  return `${region}:${token.length}:${token.slice(0, 8)}:${token.slice(-8)}:${userId}`;
 }
 
 function pruneCache(now: number): void {
@@ -913,7 +910,10 @@ export async function fetchUpstreamModels(
   if (!token) return undefined;
 
   const userId = credential.userId ?? extractUserIdFromJwt(token);
-  const cacheKey = cacheKeyFor(token, userId ?? 'anonymous');
+  // 缓存指纹必须含区域:两个区域的模型目录不同(如国内版的混元系模型国际版
+  // 未必提供),共用缓存键会让先到的区域结果被另一区域误用。
+  const region = credential.region ?? 'cn';
+  const cacheKey = cacheKeyFor(token, userId ?? 'anonymous', region);
 
   const now = Date.now();
   const cached = modelCache.get(cacheKey);
@@ -922,7 +922,12 @@ export async function fetchUpstreamModels(
   }
   pruneCache(now);
 
-  const headers = new Headers(CONFIG_FINGERPRINT_HEADERS);
+  const profile = profileFor(region);
+  const headers = new Headers({
+    'user-agent': profile.fingerprint.clientUserAgent,
+    ...profile.fingerprint.sessionFingerprint,
+    'accept': 'application/json',
+  });
   headers.set('authorization', `Bearer ${token}`);
   // 上游用 X-User-Id 标识请求主体;模型目录本身与身份无关,取不到时回退随机值
   headers.set('x-user-id', userId ?? crypto.randomUUID());
@@ -931,7 +936,11 @@ export async function fetchUpstreamModels(
   const timeoutId = setTimeout(() => controller.abort(), MODEL_FETCH_TIMEOUT_MS);
 
   try {
-    const upstreamUrl = env?.UPSTREAM_CONFIG_URL || DEFAULT_UPSTREAM_CONFIG_URL;
+    // 端点随区域变化;UPSTREAM_CONFIG_URL 为改造前存量配置,仅覆盖国内版
+    const upstreamUrl =
+      region === 'intl' || !env?.UPSTREAM_CONFIG_URL
+        ? endpointUrl(profile, 'config')
+        : env.UPSTREAM_CONFIG_URL;
     const response = await fetch(upstreamUrl, { headers, signal: controller.signal });
     if (!response.ok) return undefined;
 
@@ -1080,14 +1089,28 @@ export function toAnthropicModelsList(models: OpenAIModel[]): AnthropicModelsLis
  * 放在本模块（而非 index.ts 或 admin.ts）：两者都需要它，
  * 置于公共依赖层可避免 index ↔ admin 的循环引用。
  */
+/**
+ * 解析**指定区域**的模型目录（浏览器模型页 / 管理台模型勾选用）。
+ *
+ * 区域决定用哪套上游拉取，因此必须显式传入 —— 混合凭证池里若不按区域
+ * 过滤，会拿国内版目录回答国际版标签页（或反之），且因为回退机制存在，
+ * 页面看起来正常、内容却是错的。
+ *
+ * 回退到静态快照时同样只回退该区域的快照：国内版快照含混元系模型，
+ * 对国际版是无效目录，宁可给出空列表也不误导客户端。
+ */
 export async function resolveBrowserModelsList(
   env: { CREDENTIALS_KV?: unknown; CREDENTIALS_ENC_SECRET?: string; UPSTREAM_CONFIG_URL?: string },
+  region: Region = 'cn',
 ): Promise<OpenAIModel[]> {
   try {
     const { getTokenStore } = await import('./store');
     const { getCredentialStatus } = await import('./credentials');
     const credentials = await getTokenStore(env as never).listCredentials();
     for (const credential of credentials) {
+      // 只在该区域内挑选可用凭证
+      if ((credential.region ?? 'cn') !== region) continue;
+
       const status = getCredentialStatus(credential);
       if (status !== 'healthy' && status !== 'error') continue;
 
@@ -1099,6 +1122,7 @@ export async function resolveBrowserModelsList(
           token,
           userId: credential.userId,
           kind: credential.kind,
+          region: credential.region ?? 'cn',
           credentialId: credential.id,
         },
         env,
@@ -1109,5 +1133,5 @@ export async function resolveBrowserModelsList(
   } catch {
     // 凭证存储或上游异常时回退静态目录，页面仍可用
   }
-  return getModelsList().data;
+  return getRegionModelsList(region).data;
 }

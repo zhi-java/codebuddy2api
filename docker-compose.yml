@@ -43,3 +43,10 @@ services:
 volumes:
   gateway-data:
     name: codebuddy-gateway-data
+    # 不声明 external：一键部署时 compose 会自动创建该卷。
+    # 代价是当卷由更早的 `docker run` 创建时，每次启动会有一条
+    # "已存在但非本项目创建" 警告（无害）。
+    #
+    # 注意：**不要执行 `docker compose down -v`** —— 它会删除此卷，
+    # 里面是全部上游凭证（加密存储）。需清理请用：
+    #   docker rm -f codebuddy-gateway && docker volume rm codebuddy-gateway-data

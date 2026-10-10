@@ -8,6 +8,14 @@ export interface Env {
   UPSTREAM_CONFIG_URL?: string;
   /** 上游 token 刷新接口,默认 https://copilot.tencent.com/v2/plugin/auth/token/refresh */
   UPSTREAM_REFRESH_URL?: string;
+  /**
+   * 上游计费基址(额度/签到的 origin),默认 https://copilot.tencent.com。
+   *
+   * 只改这里不够:计费请求额外携带 `host` 与 `x-domain` 身份头,两者必须
+   * 与本基址同源,否则上游按渠道准入拒绝。`upstream-billing.ts` 的
+   * billingOrigin() 会从本值派生这两个头,保证切换基址时不会漏改。
+   */
+  UPSTREAM_BILLING_BASE?: string;
   UPSTREAM_TIMEOUT_SECONDS: string;
   UPSTREAM_CONNECT_TIMEOUT_SECONDS: string;
   CORS_ALLOW_ORIGINS: string;
@@ -65,7 +73,7 @@ export interface Env {
 const PROMPT_ROLES = new Set(['system', 'developer']);
 
 /** 替换后的渠道身份句(CodeBuddy 官方身份) */
-const CODEBUDDY_CHANNEL_LINE = "You are CodeBuddy, Tencent's official AI coding assistant.";
+export const CODEBUDDY_CHANNEL_LINE = "You are CodeBuddy, Tencent's official AI coding assistant.";
 
 /** 已知细节替换(Anthropic 渠道句由 replaceSystemText 行级规则统一处理) */
 const SYSTEM_TEXT_REPLACEMENTS: [RegExp, string][] = [

@@ -8,8 +8,9 @@
  */
 
 import { findModelMetadata, fetchUpstreamModels, OpenAIModel } from './models';
+import { profileFor } from './region';
 import type { UpstreamCredential } from './types';
-import { Env, rewritePayload, normalizeModelId } from './utils';
+import { CODEBUDDY_CHANNEL_LINE, Env, rewritePayload, normalizeModelId } from './utils';
 
 /**
  * DeepSeek Harness / 新版 OpenAI SDK 会带上游不认识的字段,且常把
@@ -131,6 +132,47 @@ export async function sanitizeChatPayload(
   return payload;
 }
 
+/**
+ * 区域差异适配（在清洗与改写之后执行）。
+ *
+ * 国际版有两条国内版没有的硬约束，均由真实链路实测确认：
+ *
+ *  1. **强制流式** —— 非流式请求返回 400 `Non-stream chat request is
+ *     currently not supported`。对国际版一律置 stream=true；客户端请求非流式
+ *     时由上层协议层负责聚合成非流式响应（网关本身即如此设计）。
+ *  2. **首条消息必须是 system prompt** —— 否则返回 400 `first message is
+ *     not system prompt`。客户端（尤其 Anthropic 协议转换后的链路）可能
+ *     发出「首条即 user」的形态，这里补一条 system 占位。
+ *
+ * 只对国际版生效：国内版不需要 system 前置，贸然插入会改变既有行为。
+ */
+function applyRegionRequirements(
+  payload: Record<string, unknown>,
+  credential: UpstreamCredential,
+): void {
+  const profile = profileFor(credential.region);
+  if (!profile.features.requireLeadingSystem) return;
+
+  payload['stream'] = true;
+
+  const messages = payload['messages'];
+  if (!Array.isArray(messages) || messages.length === 0) return;
+
+  const hasLeadingSystem = (() => {
+    const first = messages[0];
+    return Boolean(first) && typeof first === 'object' && !Array.isArray(first)
+      && (first as Record<string, unknown>)['role'] === 'system';
+  })();
+  if (hasLeadingSystem) return;
+
+  // 只放行最小占位：真正的系统指令已由 rewritePayload 注入到任何存在的
+  // system 消息里，这里仅在完全没有 system 时补一条身份声明。
+  messages.unshift({
+    role: 'system',
+    content: CODEBUDDY_CHANNEL_LINE,
+  });
+}
+
 export async function prepareChatPayload(
   payload: Record<string, unknown>,
   env: Env,
@@ -138,5 +180,6 @@ export async function prepareChatPayload(
 ): Promise<Record<string, unknown>> {
   const rewrittenPayload = rewritePayload(await sanitizeChatPayload(payload, env, credential));
   rewrittenPayload['stream'] = true;
+  applyRegionRequirements(rewrittenPayload, credential);
   return rewrittenPayload;
 }

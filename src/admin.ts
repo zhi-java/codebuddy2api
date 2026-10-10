@@ -8,6 +8,7 @@
 import { generateApiKey, randomId, signSession, timingSafeEqual, verifySession } from './crypto';
 import {
   CHANNEL_FAULT_STATUSES,
+  ensureValidToken,
   forceRefreshCredential,
   getCredentialStatus,
   markCredentialFailure,
@@ -15,6 +16,7 @@ import {
 } from './credentials';
 import { getTokenStore, hashApiKey } from './store';
 import { resolveBrowserModelsList } from './models';
+import { detectRegionFromToken, endpointUrl, isRegion, profileFor } from './region';
 import { getKeyUsage, deleteKeyUsage, resetKeyUsage } from './key-usage';
 import { renderLoginPage } from './admin-ui';
 import { serveAppShell, serveStaticFile } from './static';
@@ -22,7 +24,7 @@ import { fetchCheckinStatus, fetchCredentialQuota, fetchDailyCheckin } from './u
 import { CATCHUP_DELAYS_MIN, CHECKIN_UTC_HOUR, CHECKIN_UTC_MINUTE } from './scheduled';
 import { createSseReader, parseSseJsonChunks } from './protocol/sse';
 import { prepareChatPayload } from './payload';
-import type { ClientKey, Credential, CredentialKind, KeyQuota } from './types';
+import type { ClientKey, Credential, CredentialKind, KeyQuota, Region } from './types';
 import { Env, jsonResponse, fetchWithTimeout, resolveRateLimit } from './utils';
 import { checkRateLimit } from './rate-limiter';
 import { metricsSnapshot } from './metrics';
@@ -271,7 +273,9 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
    * 本端点走 cookie 鉴权，内部用健康凭证代拉（不暴露凭证）。
    */
   if (path === '/admin/api/models' && request.method === 'GET') {
-    const models = await resolveBrowserModelsList(env);
+    // ?region=intl 返回国际版目录(供 Key 的模型绑定多选按区域切换)
+    const region: Region = new URL(request.url).searchParams.get('region') === 'intl' ? 'intl' : 'cn';
+    const models = await resolveBrowserModelsList(env, region);
     return jsonResponse({ data: models.map((m) => ({ id: m.id, name: m._name ?? m.id })) }, env);
   }
 
@@ -390,6 +394,8 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
       id: randomId('cred'),
       name: String(body.name ?? '未命名凭证'),
       kind: kind as CredentialKind,
+      // 显式枚举白名单,避免任意字符串落库。缺省按国内版(存量行为)。
+      region: isRegion(body.region) ? body.region : 'cn',
       enabled: body.enabled !== false,
       createdAt: now,
       updatedAt: now,
@@ -407,6 +413,21 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
     };
 
     credential.userId ??= deriveUserId(credential);
+
+    // 用户未显式指定区域时，从令牌自身推断：国际版令牌由 Keycloak 签发
+    // (iss 含 codebuddy.ai),国内版无此特征。区域配错的后果是请求必然 401,
+    // 而用户很难自行定位,所以在服务端兜住这一层。
+    //
+    // 三个字段都要参与推断:只填了 refreshToken(常见于刚录入)时,
+    // accessToken 为空,若只看它会把国际版凭证误判为国内版。
+    if (!isRegion(body.region)) {
+      credential.region =
+        detectRegionFromToken(credential.apiKey)
+        ?? detectRegionFromToken(credential.accessToken)
+        ?? detectRegionFromToken(credential.refreshToken)
+        ?? 'cn';
+    }
+
     await store.saveCredential(credential);
     return jsonResponse({ data: summarizeCredential(credential) }, env, 201);
   }
@@ -496,6 +517,15 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
         enabled: typeof body.enabled === 'boolean' ? body.enabled : existing.enabled,
         updatedAt: Date.now(),
       };
+
+      // 区域可改：选错区域的后果是所有请求 401，而凭证的加密材料无法
+      // 从密文回填到另一个区域（token 与签发方绑定），若不支持修改，
+      // 用户只能删除后重新粘贴 token —— 操作繁琐且极易再错一次。
+      // 这里只改归属，不动任何密钥材料。
+      if (isRegion(body.region) && body.region !== updated.region) {
+        updated.region = body.region;
+      }
+
       await store.saveCredential(updated);
       return jsonResponse({ data: summarizeCredential(updated) }, env);
     }
@@ -626,40 +656,101 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
 }
 
 /**
+ * 取凭证用于管理端操作（连通测试 / 试跑）的可用 token。
+ *
+ * 与转发链路的差异：转发走 resolveUpstreamCredential → ensureValidToken，
+ * 会用 refreshToken 自动换取 accessToken；管理端此前直接读 accessToken，
+ * 导致「只填了 refreshToken」的凭证（刚录入、accessToken 为空，
+ * 或已过期）在测试功能里一律报 `Credential has no usable token`，
+ * 而同样的凭证在真实转发链路里其实是可用的 —— 两条链路行为不一致。
+ *
+ * 这里补齐：先按需刷新，再返回 token。
+ */
+async function usableTokenFor(
+  credential: Credential,
+  env: Env,
+): Promise<{ token: string; userId?: string; credential: Credential }> {
+  const effective = await ensureValidToken(credential, env as never);
+  const token = effective.kind === 'ck_apikey' ? effective.apiKey : effective.accessToken;
+  if (!token) {
+    throw new Error(
+      effective.refreshToken
+        ? '凭证无 accessToken，且自动刷新未产出可用 token（请检查 refreshToken 是否有效）'
+        : '凭证没有可用 token：请填写 accessToken 或 API Key',
+    );
+  }
+  return { token, userId: effective.userId ?? undefined, credential: effective };
+}
+
+/**
+ * 构造管理端发往上游的 URL 与请求头。
+ *
+ * 区域差异必须与转发链路一致：国际版凭证若被打到国内域名、或缺少渠道
+ * 指纹，一律 401 —— 而控制台上的连通测试/试跑恰恰是用户判断「凭证能不能
+ * 用」的主要入口，这里报错会让人误判为凭证本身失效。
+ */
+function upstreamTargetFor(
+  credential: Credential,
+  env: Env,
+  token: string,
+  userId: string | undefined,
+): { url: string; headers: Record<string, string> } {
+  const profile = profileFor(credential.region);
+  const configured = credential.region === 'intl' ? undefined : env.UPSTREAM_CHAT_COMPLETIONS_URL;
+  return {
+    url: configured || endpointUrl(profile, 'chatCompletions'),
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+      'user-agent': profile.fingerprint.clientUserAgent,
+      ...profile.fingerprint.sessionFingerprint,
+      ...(userId ? { 'x-user-id': userId } : {}),
+    },
+  };
+}
+
+/**
  * 用指定凭证向上游发一次最小 chat 请求，验证可用性。
  */
 async function handleTest(request: Request, env: Env): Promise<Response> {
   const body = await readJson(request);
   const credentialId = typeof body.credentialId === 'string' ? body.credentialId : '';
-  const credential = credentialId ? await getTokenStore(env).getCredential(credentialId) : undefined;
+  const stored = credentialId ? await getTokenStore(env).getCredential(credentialId) : undefined;
 
-  if (!credential) {
+  if (!stored) {
     return jsonResponse({ error: 'Credential not found' }, env, 404);
   }
 
-  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
-  if (!token) {
-    return jsonResponse({ error: 'Credential has no usable token' }, env, 400);
+  let usable: Awaited<ReturnType<typeof usableTokenFor>>;
+  try {
+    usable = await usableTokenFor(stored, env);
+  } catch (err) {
+    await markCredentialFailure(stored.id, (err as Error).message, env as never).catch(() => undefined);
+    return jsonResponse({ error: (err as Error).message }, env, 400);
   }
+  const token = usable.token;
+  const credential = usable.credential;
 
-  const url = env.UPSTREAM_CHAT_COMPLETIONS_URL;
+  // 走与转发链路一致的请求构造：区域路由 + 渠道指纹 + 国际版载荷约束
+  const target = upstreamTargetFor(credential, env, token, usable.userId);
+
+  const testPayload = await prepareChatPayload(
+    {
+      model: typeof body.model === 'string' ? body.model : 'hy3',
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+    env,
+    { token, userId: usable.userId, kind: credential.kind, region: credential.region },
+  );
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const response = await fetch(url, {
+    const response = await fetch(target.url, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        ...(credential.userId ? { 'x-user-id': credential.userId } : {}),
-      },
-      body: JSON.stringify({
-        model: typeof body.model === 'string' ? body.model : 'hy3',
-        stream: true,
-        max_tokens: 16,
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
+      headers: target.headers,
+      body: JSON.stringify(testPayload),
       signal: controller.signal,
     });
 
@@ -711,11 +802,17 @@ async function handleTest(request: Request, env: Env): Promise<Response> {
 async function handleChatTestStream(request: Request, env: Env): Promise<Response> {
   const body = await readJson(request);
   const credentialId = typeof body.credentialId === 'string' ? body.credentialId : '';
-  const credential = credentialId ? await getTokenStore(env).getCredential(credentialId) : undefined;
-  if (!credential) return jsonResponse({ error: 'Credential not found' }, env, 404);
+  const stored = credentialId ? await getTokenStore(env).getCredential(credentialId) : undefined;
+  if (!stored) return jsonResponse({ error: 'Credential not found' }, env, 404);
 
-  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
-  if (!token) return jsonResponse({ error: 'Credential has no usable token' }, env, 400);
+  let usable: Awaited<ReturnType<typeof usableTokenFor>>;
+  try {
+    usable = await usableTokenFor(stored, env);
+  } catch (err) {
+    return jsonResponse({ error: (err as Error).message }, env, 400);
+  }
+  const token = usable.token;
+  const credential = usable.credential;
 
   const model = typeof body.model === 'string' && body.model ? body.model : 'hy4-preview';
   const userMessage = typeof body.message === 'string' ? body.message : '';
@@ -739,19 +836,16 @@ async function handleChatTestStream(request: Request, env: Env): Promise<Respons
   const payload = await prepareChatPayload(
     { model, stream: true, max_tokens: maxTokens, temperature, messages },
     env,
-    { token, userId: credential.userId, kind: credential.kind, credentialId: credential.id },
+    { token, userId: credential.userId, kind: credential.kind, region: credential.region, credentialId: credential.id },
   );
+
+  const target = upstreamTargetFor(credential, env, token, credential.userId);
 
   let upstream: Response;
   try {
-    upstream = await fetchWithTimeout(env, env.UPSTREAM_CHAT_COMPLETIONS_URL, {
+    upstream = await fetchWithTimeout(env, target.url, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'text/event-stream',
-        authorization: `Bearer ${token}`,
-        ...(credential.userId ? { 'x-user-id': credential.userId } : {}),
-      },
+      headers: { ...target.headers, accept: 'text/event-stream' },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -857,10 +951,13 @@ async function handleChatTest(request: Request, env: Env): Promise<Response> {  
     return jsonResponse({ error: 'Credential not found' }, env, 404);
   }
 
-  const token = credential.kind === 'ck_apikey' ? credential.apiKey : credential.accessToken;
-  if (!token) {
-    return jsonResponse({ error: 'Credential has no usable token' }, env, 400);
+  let usable: Awaited<ReturnType<typeof usableTokenFor>>;
+  try {
+    usable = await usableTokenFor(credential, env);
+  } catch (err) {
+    return jsonResponse({ error: (err as Error).message }, env, 400);
   }
+  const token = usable.token;
 
   const model = typeof body.model === 'string' && body.model ? body.model : 'hy3';
   const messages: Record<string, unknown>[] = [];
@@ -875,25 +972,22 @@ async function handleChatTest(request: Request, env: Env): Promise<Response> {  
   if (system) messages.push({ role: 'system', content: system });
   messages.push({ role: 'user', content: userMessage });
 
-  const url = env.UPSTREAM_CHAT_COMPLETIONS_URL;
+  // 与连通测试同构：区域路由 + 渠道指纹 + 载荷约束均走共用逻辑
+  const target = upstreamTargetFor(credential, env, token, usable.userId);
+  const payload = await prepareChatPayload(
+    { model, messages },
+    env,
+    { token, userId: usable.userId, kind: credential.kind, region: credential.region },
+  );
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 90_000);
 
   try {
-    const response = await fetchWithTimeout(env, url, {
+    const response = await fetchWithTimeout(env, target.url, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        ...(credential.userId ? { 'x-user-id': credential.userId } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        max_tokens: 4000,
-        temperature: 1,
-        messages,
-      }),
+      headers: target.headers,
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
@@ -997,6 +1091,7 @@ function summarizeCredential(credential: Credential) {
     id: credential.id,
     name: credential.name,
     kind: credential.kind,
+    region: credential.region ?? 'cn',
     status: getCredentialStatus(credential),
     enabled: credential.enabled,
     userId: credential.userId,

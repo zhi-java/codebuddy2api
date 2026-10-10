@@ -150,6 +150,22 @@ export const KIND_NAME: Record<string, string> = {
   cli_oauth: 'CLI OAuth',
 };
 
+/** 区域显示名：与后端 region.ts 的档案标签一致 */
+export const REGION_NAME: Record<string, string> = {
+  cn: '国内版',
+  intl: '国际版',
+};
+
+/**
+ * 该凭证所在区域是否支持每日签到。
+ *
+ * 「Buddy 加油站」是国内版专属活动，国际版无对应接口。与其在点击后报错，
+ * 不如在界面上直接置灰/隐藏 —— 依据与后端 RegionProfile.features 一致。
+ */
+export function supportsCheckin(credential: { region?: string }): boolean {
+  return (credential.region ?? 'cn') === 'cn';
+}
+
 export const STATUS_META: Record<
   string,
   { label: string; type: 'success' | 'warning' | 'error' | 'default' | 'info' }

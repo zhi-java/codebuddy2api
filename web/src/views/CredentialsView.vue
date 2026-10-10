@@ -31,6 +31,7 @@ import {
   useMessage,
   type DataTableColumns,
   type DataTableRowKey,
+  type DropdownOption,
 } from 'naive-ui';
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
@@ -38,9 +39,9 @@ import PageHeader from '../components/PageHeader.vue';
 import TableSkeleton from '../components/TableSkeleton.vue';
 import { api, type DataResponse } from '../api';
 import { tick } from '../autoRefresh';
-import { KIND_NAME, STATUS_META, fmtTime, num, relTime } from '../format';
+import { KIND_NAME, REGION_NAME, STATUS_META, fmtTime, num, relTime, supportsCheckin } from '../format';
 import { loadSettings, refreshCredentials, saveSettings, store } from '../store';
-import type { CheckinStatus, CredentialSummary, CredentialStatus, QuotaInfo } from '../types';
+import type { CheckinStatus, CredentialSummary, CredentialStatus, QuotaInfo, Region } from '../types';
 
 const message = useMessage();
 const dialog = useDialog();
@@ -55,7 +56,14 @@ const selected = ref<DataTableRowKey[]>([]);
 
 const showCreate = ref(false);
 const creating = ref(false);
-const form = ref({ name: '', kind: 'ck_apikey' as 'ck_apikey' | 'cli_oauth', token: '', refreshToken: '' });
+const form = ref({
+  name: '',
+  kind: 'ck_apikey' as 'ck_apikey' | 'cli_oauth',
+  // 'auto' 表示交给服务端按令牌特征推断（默认，见 regionOptions）
+  region: 'auto' as Region | 'auto',
+  token: '',
+  refreshToken: '',
+});
 
 const autoCheckin = ref(false);
 const savingCheckin = ref(false);
@@ -74,6 +82,22 @@ const kindOptions = [
   { label: '控制台 API Key（ck_ 开头，不会过期）', value: 'ck_apikey' },
   { label: 'CLI OAuth（accessToken，可自动刷新）', value: 'cli_oauth' },
 ];
+
+/**
+ * 区域选项。
+ *
+ * 区域决定凭证被打到哪套上游（域名/端点/鉴权都不同），配错必然 401。
+ * 后端会从令牌特征自动推断（国际版令牌带 codebuddy.ai 的 iss），因此这里
+ * 的选择属于「显式确认」——留空时用 auto 让服务端推断更稳妥。
+ */
+const regionOptions = [
+  { label: '国内版（copilot.tencent.com）', value: 'cn' },
+  { label: '国际版（codebuddy.ai）', value: 'intl' },
+  { label: '自动识别（推荐）', value: 'auto' },
+];
+
+/** 修改区域弹窗的选项（编辑态只有明确的两个区域，没有「自动识别」） */
+const regionEditOptions = regionOptions.filter((o) => o.value !== 'auto');
 
 /** 状态摘要 chips：既是统计也是过滤器 */
 const summary = computed(() => {
@@ -294,21 +318,68 @@ async function batchToggle(enabled: boolean): Promise<void> {
   await refreshCredentials();
 }
 
-const rowMenu = (row: CredentialSummary) => [
-  { label: '查看额度', key: 'quota' },
-  { label: '签到状态', key: 'checkin-status' },
-  { label: '立即签到', key: 'checkin' },
-  { label: row.enabled ? '停用' : '启用', key: 'toggle' },
-  { type: 'divider', key: 'd1' },
-  { label: '删除凭证', key: 'delete' },
-];
+/**
+ * 行操作菜单。
+ *
+ * 「Buddy 加油站」是国内版专属活动，国际版无对应接口 —— 对国际版凭证
+ * 直接隐藏签到项，而不是让用户点了再吃一个后端错误（与后端
+ * RegionProfile.features 的判断依据一致）。
+ */
+const rowMenu = (row: CredentialSummary) => {
+  const items: DropdownOption[] = [{ label: '查看额度', key: 'quota' }];
+  if (supportsCheckin(row)) {
+    items.push({ label: '签到状态', key: 'checkin-status' }, { label: '立即签到', key: 'checkin' });
+  }
+  items.push(
+    { label: '修改区域', key: 'region' },
+    { label: row.enabled ? '停用' : '启用', key: 'toggle' },
+    { type: 'divider', key: 'd1' },
+    { label: '删除凭证', key: 'delete' },
+  );
+  return items;
+};
 
 function onRowMenu(row: CredentialSummary, key: string): void {
   if (key === 'quota') void openQuota(row);
   else if (key === 'checkin-status') void openCheckin(row);
   else if (key === 'checkin') void doCheckin(row);
+  else if (key === 'region') openRegionEditor(row);
   else if (key === 'toggle') void doToggle(row);
   else if (key === 'delete') doDelete(row);
+}
+
+/**
+ * 修改凭证所属区域。
+ *
+ * 区域配错的后果是所有请求 401，而密钥材料与签发方绑定、无法跨区域复用，
+ * 所以必须提供纠正入口 —— 否则用户只能删除后重新粘贴 token。
+ */
+const regionOpen = ref(false);
+const regionTarget = ref<CredentialSummary | null>(null);
+const regionValue = ref<Region>('cn');
+const regionSaving = ref(false);
+
+function openRegionEditor(row: CredentialSummary): void {
+  regionTarget.value = row;
+  regionValue.value = row.region ?? 'cn';
+  regionOpen.value = true;
+}
+
+async function saveRegion(): Promise<void> {
+  const target = regionTarget.value;
+  if (!target) return;
+  regionSaving.value = true;
+  try {
+    await api(`/admin/api/credentials/${encodeURIComponent(target.id)}`, {
+      method: 'PUT',
+      body: { region: regionValue.value },
+    });
+    message.success(`「${target.name}」已切换到${REGION_NAME[regionValue.value]}`);
+    regionOpen.value = false;
+    await refreshCredentials();
+  } catch (err) {
+    message.error(`修改失败：${(err as Error).message}`);
+  } finally { regionSaving.value = false; }
 }
 
 const columns = computed<DataTableColumns<CredentialSummary>>(() => [
@@ -327,13 +398,22 @@ const columns = computed<DataTableColumns<CredentialSummary>>(() => [
       ]),
   },
   {
-    title: '类型',
+    title: '类型 / 区域',
     key: 'kind',
-    width: 112,
+    width: 148,
     render: (row) =>
-      h(NTag, { size: 'small', bordered: false, type: row.kind === 'ck_apikey' ? 'default' : 'info' }, {
-        default: () => KIND_NAME[row.kind] ?? row.kind,
-      }),
+      h('div', { class: 'kind-cell' }, [
+        h(NTag, { size: 'small', bordered: false, type: row.kind === 'ck_apikey' ? 'default' : 'info' }, {
+          default: () => KIND_NAME[row.kind] ?? row.kind,
+        }),
+        // 区域用弱化样式：它是凭证的归属属性，不是状态，正常无需强调
+        h(NTag, {
+          size: 'small',
+          bordered: false,
+          type: row.region === 'intl' ? 'warning' : 'default',
+          class: 'region-tag',
+        }, { default: () => REGION_NAME[row.region ?? 'cn'] }),
+      ]),
   },
   { title: '状态', key: 'status', width: 96, render: statusTag },
   {
@@ -390,6 +470,8 @@ async function submitCreate(): Promise<void> {
   creating.value = true;
   try {
     const body: Record<string, unknown> = { name, kind: form.value.kind };
+    // 'auto' 时不下发 region，由服务端按令牌特征推断
+    if (form.value.region !== 'auto') body.region = form.value.region;
     if (form.value.kind === 'ck_apikey') body.apiKey = token;
     else {
       body.accessToken = token;
@@ -398,7 +480,7 @@ async function submitCreate(): Promise<void> {
     await api('/admin/api/credentials', { method: 'POST', body });
     message.success('凭证已添加');
     showCreate.value = false;
-    form.value = { name: '', kind: 'ck_apikey', token: '', refreshToken: '' };
+    form.value = { name: '', kind: 'ck_apikey', region: 'auto', token: '', refreshToken: '' };
     await refreshCredentials();
   } catch (err) {
     message.error(`添加失败：${(err as Error).message}`);
@@ -484,8 +566,8 @@ onMounted(async () => {
               <template #trigger>
                 <AppIcon name="help" :size="14" class="help-ico" />
               </template>
-              每天 {{ CHECKIN_TIME }} 对全部启用凭证自动签到（Buddy 加油站，每日 100 credits）；
-              未成功的按递增间隔补签，避免断签。关闭后仅保留行内「立即签到」。
+              每天 {{ CHECKIN_TIME }} 对全部启用的**国内版**凭证自动签到（Buddy 加油站，每日 100 credits）；
+              未成功的按递增间隔补签，避免断签。国际版无此活动会被跳过。关闭后仅保留行内「立即签到」。
             </NPopover>
             <NSwitch size="small" :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
           </div>
@@ -541,6 +623,12 @@ onMounted(async () => {
         <NFormItem label="类型">
           <NSelect v-model:value="form.kind" :options="kindOptions" />
         </NFormItem>
+        <NFormItem label="区域">
+          <NSelect v-model:value="form.region" :options="regionOptions" />
+          <template #feedback>
+            <span class="sub">国内版与国际版的登录地址、接口与鉴权方式均不同，区域配错会导致请求被拒。</span>
+          </template>
+        </NFormItem>
         <NFormItem :label="form.kind === 'cli_oauth' ? 'accessToken' : 'API Key'">
           <NInput
             v-model:value="form.token"
@@ -558,6 +646,28 @@ onMounted(async () => {
         <NSpace justify="end">
           <NButton :disabled="creating" @click="showCreate = false">取消</NButton>
           <NButton type="primary" :loading="creating" @click="submitCreate">保存</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 修改区域弹窗 -->
+<NModal
+      v-model:show="regionOpen"
+      preset="card"
+      title="修改区域"
+      style="width: min(460px, calc(100vw - 32px))"
+      :mask-closable="!regionSaving"
+    >
+      <p class="sub" style="margin: 0 0 14px">
+        凭证「{{ regionTarget?.name }}」当前为
+        <b>{{ REGION_NAME[regionTarget?.region ?? 'cn'] }}</b>。
+        国内版与国际版的登录地址、接口与鉴权方式不同，区域配错会导致所有请求被拒。
+      </p>
+      <NSelect v-model:value="regionValue" :options="regionEditOptions" />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton :disabled="regionSaving" @click="regionOpen = false">取消</NButton>
+          <NButton type="primary" :loading="regionSaving" @click="saveRegion">保存</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -764,5 +874,13 @@ onMounted(async () => {
 :deep(.mono) {
   font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+
+/* 类型单元格：类型标签 + 区域标签并排 */
+.kind-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 </style>

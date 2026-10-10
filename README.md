@@ -44,6 +44,7 @@ gateway/
 │   ├── payload.ts        # 上游载荷处理（代理链路与试跑共用：清洗 + 思考档位映射）
 │   ├── metrics.ts        # 进程内请求监控统计（60 分钟滚动窗口）
 │   ├── logs.ts           # 进程内运行日志缓冲（供控制台日志页）
+│   ├── region.ts         # 上游区域档案（国内版/国际版的端点、指纹与能力开关）
 │   ├── types.ts          # 凭证体系类型定义
 │   ├── utils.ts          # 环境变量、系统提示词改写、响应工具
 │   └── rate-limiter.ts   # 内存令牌桶限流
@@ -139,6 +140,18 @@ docker run -d --name codebuddy-gateway \
 > `ADMIN_SESSION_SECRET` 用于会话签名,`CREDENTIALS_ENC_SECRET` 用于加密落盘的上游凭证。
 > 后两者一旦变更,已保存的登录态与凭证将全部失效,需重新录入。
 
+> ⚠️ **不要执行 `docker compose down -v`**:`-v` 会删除数据卷
+> `codebuddy-gateway-data`,里面是**全部上游凭证**(加密存储)。普通停启用
+> `docker compose down` / `docker compose restart` 即可。需要彻底清理请显式执行:
+>
+> ```bash
+> docker rm -f codebuddy-gateway
+> docker volume rm codebuddy-gateway-data   # 确认不再需要其中凭证时
+> ```
+>
+> 该卷若由上面的 `docker run` 创建,compose 启动时会打印一条
+> "已存在但非本项目创建" 的警告,属正常现象,不影响运行。
+
 > **通过明文 HTTP 访问控制台时**:会话 cookie 是否带 `Secure` 会按请求协议自动判断
 > ——HTTPS(或 `X-Forwarded-Proto: https`)带,明文 HTTP 不带。若你的浏览器仍无法
 > 保持登录态,可用 `ADMIN_COOKIE_SECURE=false` 显式关闭(反向代理终结 TLS 但未传
@@ -214,10 +227,11 @@ npm run typecheck
 |------|--------|------|
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | 监听地址 |
 | `DATA_FILE` | `./data/codebuddy.db` | SQLite 路径(`.json` 结尾则用 JSON 文件) |
-| `UPSTREAM_CHAT_COMPLETIONS_URL` | `https://copilot.tencent.com/v2/chat/completions` | Chat Completions 上游 API 地址 |
-| `UPSTREAM_QUOTA_URL` | `https://copilot.tencent.com/v2/billing/meter/get-user-resource` | 积分/额度查询上游 API 地址 |
-| `UPSTREAM_CONFIG_URL` | `https://copilot.tencent.com/v3/config` | 模型配置（目录）上游 API 地址 |
-| `UPSTREAM_REFRESH_URL` | `https://copilot.tencent.com/v2/plugin/auth/token/refresh` | token 刷新上游 API 地址 |
+| `UPSTREAM_CHAT_COMPLETIONS_URL` | `https://copilot.tencent.com/v2/chat/completions` | Chat Completions 上游 API 地址（仅覆盖国内版） |
+| `UPSTREAM_QUOTA_URL` | `https://copilot.tencent.com/v2/billing/meter/get-user-resource` | 积分/额度查询上游 API 地址（仅覆盖国内版） |
+| `UPSTREAM_CONFIG_URL` | `https://copilot.tencent.com/v3/config` | 模型配置（目录）上游 API 地址（仅覆盖国内版） |
+| `UPSTREAM_REFRESH_URL` | `https://copilot.tencent.com/v2/plugin/auth/token/refresh` | token 刷新上游 API 地址（仅覆盖国内版） |
+| `UPSTREAM_BILLING_BASE` | `https://copilot.tencent.com` | 计费域 origin（额度/签到，仅覆盖国内版）；`host` 与 `x-domain` 身份头由它派生 |
 | `GATEWAY_KEY_PREFIX` | `sk-cb` | 网关自建 Key 前缀 |
 | `UPSTREAM_TIMEOUT_SECONDS` | `600` | 总超时（秒） |
 | `UPSTREAM_CONNECT_TIMEOUT_SECONDS` | `30` | 连接超时（秒） |
@@ -245,6 +259,49 @@ npm run typecheck
 | CLI accessToken | JWT | 原样透传上游 |
 
 网关 Key 的优势：客户端配置一次即可，**不再受 CLI accessToken 60 天过期影响**——过期前 10 分钟网关自动用 refreshToken 换新，失败则冷却该凭证并切换到绑定集内的其他健康凭证。
+
+## 上游区域：国内版与国际版
+
+网关同时支持两个彼此独立的上游，可在控制台「上游凭证」中为**每个凭证**选择区域，一个网关内两类凭证并行服务：
+
+| | 国内版 | 国际版 |
+|---|---|---|
+| 域名 | `copilot.tencent.com` | `www.codebuddy.ai` |
+| 聊天端点 | `/v2/chat/completions` | `/v2/chat/completions`（同路径，域名不同） |
+| 令牌体系 | 插件自有 token | Keycloak（`iss` 含 `codebuddy.ai`） |
+| 刷新端点 | `/v2/plugin/auth/token/refresh` | `/v2/plugin/auth/token/refresh`（同名，仅域名不同） |
+| 额度接口 | `/v2/billing/meter/…` | `/billing/meter/…`（无 `/v2` 前缀） |
+| 渠道指纹 | 需 CLI `x-ide-*` 头 | 不需要 |
+| 每日签到 | 有（Buddy 加油站） | **无**（国内版专属活动） |
+| 请求约束 | 非流式可用 | **强制流式** + **首条消息必须是 system** |
+
+**区域配错必然 401**，且用户很难自行定位，因此：
+
+- 录入凭证时选「自动识别」即可——服务端从令牌特征（国际版令牌的 `iss`）推断区域；
+- 模型目录页 `/v1/models` 提供「国内版 / 国际版」标签切换（`?region=intl`）；
+- 管理台的模型绑定多选同样按区域切换，两个区域的模型 ID 不通用；
+- **故障转移只在同一区域内进行**：跨区必然失败，若不收敛，会把单区故障放大成全池不可用。
+
+> 所有区域差异集中定义在 `src/region.ts` 的区域档案中，是端点与渠道指纹的**唯一真相源**。
+> 上述 `UPSTREAM_*` 环境变量仅覆盖国内版端点（保持存量用法），不影响国际版。
+>
+> 国际版对**请求形态**另有两项硬约束，网关已自动适配（见 `payload.ts` 的
+> `applyRegionRequirements`，按区域开关，不影响国内版行为）：
+>
+> - **强制流式**：非流式请求返回 `400 Non-stream chat request is currently not supported`。
+>   网关本身恒以流式向上游请求，客户端请求非流式时由协议层聚合返回。
+> - **首条消息必须是 system prompt**：否则返回 `400 first message is not system prompt`。
+>   客户端（如 Anthropic 协议转换链路）发出「首条即 user」时，网关补一条 system 占位。
+
+真实链路验证见 `tests/live-intl.mjs`（需设置 `INTL_ACCESS_TOKEN` / `INTL_REFRESH_TOKEN`）：
+
+```
+[1] 凭证区域识别: intl  PASS
+[3] 国际版模型目录: 22 个  PASS
+[4] 额度查询: HTTP 200（Free Plan Subscription，100 credits）
+[6] 真实对话(流式): HTTP 200  PASS
+[7] 非流式: HTTP 200（网关聚合）
+```
 
 ### 多凭证高可用策略
 
@@ -422,7 +479,7 @@ CodeBuddy 上游会校验请求渠道身份，判定为“未授权渠道”时�
 npm test
 ```
 
-测试通过 `esbuild` 将 TypeScript 源码打包为 ESM，再用 Node 原生 `assert` 执行（19 组用例），覆盖：
+测试通过 `esbuild` 将 TypeScript 源码打包为 ESM，再用 Node 原生 `assert` 执行（24 组用例），覆盖：
 
 - 系统提示词改写（`rewritePayload`）与模型 ID 规范化（`normalizeModelId`）
 - 网关路由、CORS 头构建与上游 URL 构建
@@ -440,6 +497,11 @@ npm test
 - 重复计费防护：网关自身失败（读取中断/空流兜底）不触发凭证重放、真实 HTTP 断流端到端不重放、进程级网络异常兜底不吞业务缺陷
 - Token 消耗统计：非流式聚合 / 流式旁路 / 协议转换三条采集链路，无 usage 不误计、重复上报不重复累加
 - Node 部署端到端（健康检查、登录、管理、SQLite 持久化）
+- 上游区域（国内版/国际版）：端点与渠道指纹按区域路由、国际版无签到、
+  刷新端点按区域选择（含响应体缺少 `code` 字段时不误判失败）、故障转移不跨区
+- 计费基址配置生效性（`UPSTREAM_BILLING_BASE` 注入 Env，`host`/`x-domain` 随基址派生）
+
+区域链路的端到端冒烟（起真实网关、录入国际版凭证、模型页标签切换）见 `tests/smoke-region.mjs`。
 
 ## 镜像发布
 

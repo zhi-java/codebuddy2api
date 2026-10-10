@@ -21,7 +21,9 @@ import {
   UpstreamCredentialError,
 } from './credentials';
 import { getTokenStore } from './store';
-import type { UpstreamCredential } from './types';
+import { CN_PROFILE, endpointUrl, profileFor } from './region';
+import type { RegionProfile } from './region';
+import type { Region, UpstreamCredential } from './types';
 import { Env, jsonResponse, fetchWithTimeout, normalizeModelId, resolveRateLimit } from './utils';
 import { handleAdmin } from './admin';
 import { renderLandingPage, renderPublicModelsPage, renderHealthPage, type LandingStatus } from './admin-ui';
@@ -69,22 +71,13 @@ const RESPONSE_EXCLUDED = new Set(['content-length', ...HOP_BY_HOP]);
 const FORWARDED_CLIENT_HEADERS = new Set(['accept', 'accept-language', 'content-type']);
 
 const DEFAULT_UPSTREAM_QUOTA_URL = 'https://copilot.tencent.com/v2/billing/meter/get-user-resource';
-const APPROVED_UPSTREAM_USER_AGENT = 'CLI/2.107.0 CodeBuddy/2.107.0';
 
 /** 入口限流配置(默认值与管理端「设置」展示共用同一份解析逻辑) */
 const rateLimit = resolveRateLimit(process.env);
 
-/** CodeBuddy 上游认可的 CLI 渠道指纹(与模型目录/计费链路保持一致)。 */
-const APPROVED_UPSTREAM_CHANNEL_HEADERS: Record<string, string> = {
-  'user-agent': APPROVED_UPSTREAM_USER_AGENT,
-  'x-ide-type': 'CLI',
-  'x-ide-name': 'CLI',
-  'x-ide-version': '2.107.0',
-  'x-requested-with': 'XMLHttpRequest',
-  'x-codebuddy-request': '1',
-  'x-product': 'SaaS',
-  'x-private-data': 'false',
-};
+// 注:CLI 渠道指纹头此前在此处独立定义一份,与 models.ts / upstream-billing.ts
+// 重复。现已统一由 region.ts 的 CN_PROFILE.fingerprint 提供,避免三处各自
+// 升级版本号时漏改一处。
 
 // ── Entry point ────────────────────────────────────────────────────────────
 
@@ -133,7 +126,11 @@ export default {
     if (request.method === 'GET' && (path === '/v1/models' || path === '/models')) {
       // 浏览器页面使用网关已配置的健康凭证实时拉取;API 客户端使用自身凭证
       if (wantsHtml(request)) {
-        return htmlResponse(renderPublicModelsPage(await resolveBrowserModelsList(env)));
+        // ?region=intl 切换查看的区域(标签页)。非法值回落国内版,
+        // 与凭证 region 的缺省口径保持一致。
+        const region: Region = url.searchParams.get('region') === 'intl' ? 'intl' : 'cn';
+        const models = await resolveBrowserModelsList(env, region);
+        return htmlResponse(renderPublicModelsPage(models, region));
       }
       // 按协议分流：Anthropic 客户端读的字段名与 OpenAI 完全不同
       // （max_input_tokens/max_tokens/type/display_name vs id/object/owned_by），
@@ -433,8 +430,10 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
   const clientRequestedStream = payloadObject?.['stream'] === true;
   const requestedModel = typeof payloadObject?.['model'] === 'string' ? payloadObject['model'] : '';
 
-  const upstreamUrl = buildUpstreamUrl(env, request.url);
-  const upstreamHeaders = buildUpstreamHeaders(request);
+  // 上游 URL 与渠道指纹都依赖**命中凭证的区域**,而凭证要到 withCredential
+  // 回调里才确定(故障转移可能换凭证)。因此不能在回调外构建 ——
+  // 否则一次故障转移后仍会拿旧区域的端点与指纹头去打新凭证,必然 401。
+  // 每次尝试在回调内重建,见下方 buildUpstreamUrl / buildUpstreamHeaders。
   const exposeReasoning = shouldExposeChatReasoning(payloadObject, env);
   let attempts = 0;
   let usedCredentialId: string | undefined;
@@ -503,6 +502,11 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
     const bodyStr = prepared
       ? JSON.stringify(await prepareChatPayload(prepared, env, credential))
       : JSON.stringify(payload);
+
+    // 按本次命中的凭证区域构建端点与渠道指纹(见上方注释)
+    const attemptProfile = profileFor(credential.region);
+    const upstreamUrl = buildUpstreamUrl(env, request.url, attemptProfile);
+    const upstreamHeaders = buildUpstreamHeaders(request, attemptProfile);
 
     applyCredentialHeaders(upstreamHeaders, credential);
 
@@ -614,11 +618,6 @@ function applyCredentialHeaders(headers: Headers, credential: UpstreamCredential
 
 async function handleQuota(request: Request, env: Env): Promise<Response> {
   const startedAt = Date.now();
-  const upstreamUrl = env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL;
-  const upstreamHeaders = new Headers({
-    'content-type': 'application/json',
-  });
-
   const requestBody = await request.text();
   const body = requestBody.trim() ? requestBody : '{}';
   let usedCredentialId: string | undefined;
@@ -632,6 +631,15 @@ async function handleQuota(request: Request, env: Env): Promise<Response> {
     usedCredentialName = credential.credentialName;
     usedKeyId = clientKey?.id;
     usedKeyName = clientKey?.name;
+
+    // 额度端点随区域变化(国际版无 /v2 前缀);UPSTREAM_QUOTA_URL 仅覆盖国内版
+    const quotaProfile = profileFor(credential.region);
+    const upstreamUrl =
+      credential.region === 'intl'
+        ? endpointUrl(quotaProfile, 'quota')
+        : env.UPSTREAM_QUOTA_URL || DEFAULT_UPSTREAM_QUOTA_URL;
+    const upstreamHeaders = buildUpstreamHeaders(request, quotaProfile);
+
     applyCredentialHeaders(upstreamHeaders, credential);
 
     try {
@@ -696,8 +704,7 @@ async function handleProtocolEndpoint(
   // 1. 客户端是否要流式(两协议均显式声明;默认非流式)
   const clientWantsStream = body['stream'] === true;
 
-  const upstreamUrl = buildUpstreamUrl(env, request.url);
-  const upstreamHeaders = buildUpstreamHeaders(request);
+  // 与 chat 链路同理:端点与渠道指纹依赖命中凭证的区域,须在回调内构建
   const path = kind === 'anthropic' ? '/v1/messages' : '/v1/responses';
   const requestedModel = typeof body['model'] === 'string' ? body['model'] : '';
   let attempts = 0;
@@ -748,6 +755,11 @@ async function handleProtocolEndpoint(
     // 3. 统一改写:模型名规范化 + 系统提示品牌文本替换 + 思考档位映射 + 字段清洗
     await prepareChatPayload(chatPayload, env, credential);
     const requestModel = typeof chatPayload['model'] === 'string' ? chatPayload['model'] : '';
+
+    // 按本次命中的凭证区域构建端点与渠道指纹(见上方注释)
+    const attemptProfile = profileFor(credential.region);
+    const upstreamUrl = buildUpstreamUrl(env, request.url, attemptProfile);
+    const upstreamHeaders = buildUpstreamHeaders(request, attemptProfile);
 
     applyCredentialHeaders(upstreamHeaders, credential);
 
@@ -889,9 +901,13 @@ function resolveThinking(
  *
  * 采用白名单而不是黑名单:客户端身份指纹一旦泄漏到 CodeBuddy 上游,
  * 整条请求会被判定为未授权渠道(HTTP 400)。这里只保留业务必需头,
- * 再叠加网关认可的 CLI 渠道指纹。
+ * 再叠加**该区域**认可的渠道指纹(见 region.ts)。
+ *
+ * 国内版要求 CLI 指纹(缺失即 403);国际版指纹为空,只发业务必需头 +
+ * Bearer(在 withCredential 中附加),不多发国内版的 x-ide-* ——那些头
+ * 在国际版无意义,且可能触发未预期的渠道校验。
  */
-function buildUpstreamHeaders(request: Request): Headers {
+function buildUpstreamHeaders(request: Request, profile: RegionProfile): Headers {
   const headers = new Headers();
   request.headers.forEach((value, name) => {
     const lower = name.toLowerCase();
@@ -903,7 +919,10 @@ function buildUpstreamHeaders(request: Request): Headers {
   if (!headers.has('content-type')) headers.set('content-type', 'application/json');
   if (!headers.has('accept')) headers.set('accept', 'application/json');
 
-  for (const [name, value] of Object.entries(APPROVED_UPSTREAM_CHANNEL_HEADERS)) {
+  for (const [name, value] of Object.entries({
+    'user-agent': profile.fingerprint.clientUserAgent,
+    ...profile.fingerprint.sessionFingerprint,
+  })) {
     headers.set(name, value);
   }
   return headers;
@@ -1646,8 +1665,20 @@ async function resolveModelsList(credential: UpstreamCredential, env: Env) {
   return { object: 'list' as const, data: upstreamModels };
 }
 
-export function buildUpstreamUrl(env: Env, requestUrl: string): string {
-  const base = env.UPSTREAM_CHAT_COMPLETIONS_URL || 'https://copilot.tencent.com/v2/chat/completions';
+/**
+ * 构建转发到上游的完整 URL。
+ *
+ * 默认走该区域的聊天端点(见 region.ts);`UPSTREAM_CHAT_COMPLETIONS_URL`
+ * 仅覆盖**国内版**端点 —— 该变量是改造前的存量用法,把它套到国际版会
+ * 让国际凭证被打到国内域名,反而掩盖区域配置错误。
+ */
+export function buildUpstreamUrl(
+  env: Env,
+  requestUrl: string,
+  profile: RegionProfile = CN_PROFILE,
+): string {
+  const configured = profile.region === 'intl' ? undefined : env.UPSTREAM_CHAT_COMPLETIONS_URL;
+  const base = configured || endpointUrl(profile, 'chatCompletions');
   const reqUrl = new URL(requestUrl);
   if (reqUrl.search) {
     const separator = base.includes('?') ? '&' : '?';

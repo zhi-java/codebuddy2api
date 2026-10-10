@@ -9,6 +9,11 @@
  * 设计：凭证池被压缩成三档枚举，渲染层拿不到原始计数，从结构上杜绝泄漏）。
  */
 
+import type { Region } from './types';
+
+/** 区域显示名（与 region.ts 的档案标签一致，渲染层不重复定义业务语义） */
+const REGION_LABEL: Record<Region, string> = { cn: '国内版', intl: '国际版' };
+
 const escapeHtml = (value: string | undefined): string =>
   String(value ?? '').replace(/[&<>"']/g, (c): string =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
@@ -318,6 +323,25 @@ const PUBLIC_CSS = `
   .page-head p { margin:0; color:var(--text-2); font-size:14px; }
 
   /* ── 模型目录 ── */
+  .region-tabs { display:flex; gap:8px; margin-bottom:18px; }
+  .region-tab {
+    font-size:13px; color:var(--text-2); text-decoration:none;
+    padding:6px 14px; border-radius:999px;
+    border:1px solid var(--border-soft); background:var(--surface);
+    transition:color .2s var(--ease), border-color .2s var(--ease);
+  }
+  .region-tab:hover { color:var(--text-1); border-color:var(--border); }
+  .region-tab.active {
+    color:var(--text-1); font-weight:600;
+    border-color:var(--border); background:var(--surface-2, var(--surface));
+  }
+  .empty-state {
+    background:var(--surface); border:1px solid var(--border-soft);
+    border-radius:var(--radius-page-sm); padding:28px 20px; text-align:center;
+  }
+  .empty-state p { margin:0; font-size:14px; }
+  .empty-state .sub { margin-top:8px; font-size:12.5px; color:var(--text-3); }
+
   .model-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); }
   .model {
     background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page-sm);
@@ -652,9 +676,12 @@ interface PublicModel {
 
 /**
  * 模型目录浏览页（浏览器直接访问 /v1/models 时返回，带设计；API 仍返回 JSON）。
- * 展示内置快照目录，无鉴权、无敏感信息。
+ *
+ * `region` 为当前查看的区域：页面以「国内版 / 国际版」标签切换，链接形如
+ * /v1/models?region=intl。API 客户端不受影响 —— JSON 分支忽略该参数，
+ * 仍按调用方自己的凭证返回对应目录。
  */
-export function renderPublicModelsPage(models: PublicModel[]): string {
+export function renderPublicModelsPage(models: PublicModel[], region: Region = 'cn'): string {
   const cards = models
     .map(
       (m) => `<div class="model">
@@ -670,6 +697,27 @@ export function renderPublicModelsPage(models: PublicModel[]): string {
     )
     .join('\n');
 
+  // 区域标签：用 query 参数切换，纯服务端渲染，不依赖 JS。
+  // 标签一律带链接而非纯样式按钮，保证无 JS 环境下也能切换。
+  const regionTabs = (['cn', 'intl'] as const)
+    .map(
+      (r) =>
+        `<a class="region-tab${r === region ? ' active' : ''}" href="/v1/models?region=${r}">${REGION_LABEL[r]}</a>`,
+    )
+    .join('');
+
+  // 国际版无内置快照：上游不可用时会是空列表。与其展示空白网格，
+  // 不如说明原因并给出配置入口，否则用户会以为是页面坏了。
+  const emptyHint =
+    models.length === 0
+      ? region === 'intl'
+        ? `<div class="empty-state">
+  <p>暂无可用模型目录</p>
+  <p class="sub">国际版目录需实时向上游拉取。请在管理台「上游凭证」中添加国际版凭证后重试。</p>
+</div>`
+        : `<div class="empty-state"><p>暂无可用模型目录</p></div>`
+      : '';
+
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -684,9 +732,11 @@ ${navBar()}
 <main class="wrap">
   <header class="page-head">
     <h1>模型目录</h1>
-    <p>共 ${models.length.toLocaleString('en-US')} 个模型</p>
+    <p>${REGION_LABEL[region]} · 共 ${models.length.toLocaleString('en-US')} 个模型</p>
   </header>
-  <div class="model-grid">${cards}</div>
+  <div class="region-tabs">${regionTabs}</div>
+  ${emptyHint}
+  ${models.length > 0 ? `<div class="model-grid">${cards}</div>` : ''}
 </main>
 ${footer('目录快照')}
 </body>

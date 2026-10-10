@@ -3,10 +3,15 @@
 export type CredentialKind = 'ck_apikey' | 'cli_oauth';
 export type CredentialStatus = 'healthy' | 'expired' | 'cooling' | 'disabled' | 'error';
 
+/** 上游区域：国内版 / 国际版。两者登录地址、接口与鉴权方式均不同。 */
+export type Region = 'cn' | 'intl';
+
 export interface CredentialSummary {
   id: string;
   name: string;
   kind: CredentialKind;
+  /** 上游区域；后端始终下发（缺省按国内版） */
+  region?: Region;
   status: CredentialStatus;
   enabled: boolean;
   userId?: string;

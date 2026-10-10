@@ -1,17 +1,21 @@
 /**
  * 上游计费能力封装:额度查询 + 每日签到。
  *
- * 对应上游接口(实测个人账号可用):
- *   POST {endpoint}/v2/billing/meter/get-user-resource
- *   POST {endpoint}/billing/meter/daily-checkin
+ * 端点随凭证区域变化(见 region.ts 的区域档案):
+ *   国内版 CN  : POST {base}/v2/billing/meter/get-user-resource
+ *                POST {base}/v2/billing/meter/daily-checkin        ← 「Buddy 加油站」
+ *   国际版 INTL: POST {base}/billing/meter/get-user-resource       ← 无 /v2 前缀
+ *                无签到接口(该活动为国内版专属),调用方按 features 开关禁用
  *
- * 头要求与模型目录一致:CLI/CodeBuddy UA + X-IDE 类型 + X-User-Id。
+ * 头要求按区域区分:国内版需 CLI/CodeBuddy UA + X-IDE 类型 + X-User-Id
+ * (缺失即 403);国际版走 openresty + Bearer,未观测到渠道指纹要求。
  * 调用前若 accessToken 临近过期会先执行一次刷新。
  */
 
 import { getTokenStore } from './store';
 import type { KVLike } from './store';
 import { refreshCredential } from './credentials';
+import { profileFor } from './region';
 import type { Credential } from './types';
 
 /** 距过期不足该阈值先刷新(与 credentials.ts 保持一致) */
@@ -24,8 +28,27 @@ interface BillingEnv {
   CREDENTIALS_ENC_SECRET?: string;
 }
 
-function baseUrl(env: BillingEnv): string {
-  return (env.UPSTREAM_BILLING_BASE || 'https://copilot.tencent.com').replace(/\/+$/, '');
+/**
+ * 取计费域基址。
+ *
+ * 国际版恒取档案值(其计费接口固定挂在门户 origin 下);国内版允许用
+ * UPSTREAM_BILLING_BASE 覆盖(存量用法,自建代理场景)。
+ */
+function baseUrl(credential: Credential, env: BillingEnv): string {
+  const profile = profileFor(credential.region);
+  const configured = credential.region === 'intl' ? undefined : env.UPSTREAM_BILLING_BASE;
+  return (configured || profile.apiBase).replace(/\/+$/, '');
+}
+
+/**
+ * 取计费域的 origin(`https://host[:port]`)。
+ *
+ * `host` / `x-domain` 这两个身份头必须与实际请求的基址同源:上游按渠道准入
+ * 校验它们,配了自定义基址却仍发 `copilot.tencent.com` 会被直接拒绝。因此
+ * 从同一个配置项派生,而不是各自硬编码——否则 UPSTREAM_BILLING_BASE 形同虚设。
+ */
+function billingOrigin(credential: Credential, env: BillingEnv): string {
+  return new URL(baseUrl(credential, env)).origin;
 }
 
 /** 取可用的上游 token;OAuth 过期时自动刷新 */
@@ -65,35 +88,41 @@ function errorText(body: BillingResponse): string | undefined {
  * 按凭证类型构造上游请求头:
  *  - cli_oauth:CLI 会话形态(CLI 头 + X-User-Id),实测签到/额度可用
  *  - ck_apikey:轻量 API-key 形态(不冒充 CLI 会话,否则上游 403)
+ *
+ * 国内版在此之上叠加档案里的渠道指纹头;国际版指纹为空,只发 Bearer +
+ * host/x-domain(计费侧身份标识)。
  */
-function buildBillingHeaders(credential: Credential, token: string): Record<string, string> {
+function buildBillingHeaders(
+  credential: Credential,
+  token: string,
+  env: BillingEnv,
+): Record<string, string> {
   const isCli = credential.kind === 'cli_oauth';
+  const profile = profileFor(credential.region);
+  const origin = billingOrigin(credential, env);
+  const host = new URL(origin).host;
 
   const common: Record<string, string> = {
-    'host': 'copilot.tencent.com',
-    'x-domain': 'copilot.tencent.com',
+    'host': host,
+    'x-domain': host,
     'accept': 'application/json, text/plain, */*',
     'content-type': 'application/json',
     'authorization': `Bearer ${token}`,
-    // 实测:缺失 User-Agent 会被上游 403,必须显式设置
-    'user-agent': isCli ? 'CLI/2.107.0 CodeBuddy/2.107.0' : 'curl/8.6.0',
+    // 两类凭证都必须带 UA:国内版缺失直接 403(与是否冒充会话无关)。
+    // ck_ 用轻量值,避免被判定为 CLI 会话。
+    'user-agent': isCli ? profile.fingerprint.clientUserAgent : 'curl/8.6.0',
   };
 
   if (!isCli) {
-    // API-key 通道:通用客户端形态(不加 CLI 会话身份头)
+    // API-key 通道:通用客户端形态。**不得**叠加 sessionFingerprint ——
+    // 国内版对 ck_ 凭证带 x-ide-* 会直接 403(冒充 CLI 会话被拒)。
     return common;
   }
 
   return {
     ...common,
-    'x-ide-type': 'CLI',
-    'x-ide-name': 'CLI',
-    'x-ide-version': '2.107.0',
     'x-user-id': credential.userId ?? '',
-    'x-requested-with': 'XMLHttpRequest',
-    'x-codebuddy-request': '1',
-    'x-product': 'SaaS',
-    'x-private-data': 'false',
+    ...profile.fingerprint.sessionFingerprint,
   };
 }
 
@@ -113,9 +142,9 @@ async function postBilling(
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const response = await fetch(`${baseUrl(env)}${path}`, {
+    const response = await fetch(`${baseUrl(credential, env)}${path}`, {
       method: 'POST',
-      headers: buildBillingHeaders(credential, token),
+      headers: buildBillingHeaders(credential, token, env),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -212,7 +241,7 @@ export async function fetchCredentialQuota(
   const pad = (n: number) => String(n).padStart(2, '0');
   const begin = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} 00:00:00`;
 
-  const { httpStatus, body } = await postBilling('/v2/billing/meter/get-user-resource', credential, env, {
+  const { httpStatus, body } = await postBilling(profileFor(credential.region).paths.quota, credential, env, {
     PageNumber: 1,
     PageSize: 200,
     ProductCode: 'p_tcaca',
@@ -350,6 +379,13 @@ export async function fetchCheckinStatus(
   credential: Credential,
   env: BillingEnv,
 ): Promise<CheckinStatusResult> {
+  // 「Buddy 加油站」是国内版专属活动,国际版没有对应接口。
+  // 明确拒绝优于发一个注定 404 的请求——控制台可据此隐藏入口,
+  // 定时签到可据此跳过,都不必各自再写一遍区域判断。
+  if (!profileFor(credential.region).features.dailyCheckin) {
+    throw new Error('国际版无每日签到活动（该功能为国内版专属）');
+  }
+
   const { httpStatus, body } = await postBilling(
     '/v2/billing/meter/checkin-activity-status',
     credential,
@@ -380,6 +416,10 @@ export async function fetchDailyCheckin(
   credential: Credential,
   env: BillingEnv,
 ): Promise<CheckinResult> {
+  if (!profileFor(credential.region).features.dailyCheckin) {
+    throw new Error('国际版无每日签到活动（该功能为国内版专属）');
+  }
+
   const { httpStatus, body } = await postBilling('/v2/billing/meter/daily-checkin', credential, env, {});
 
   const msg = errorText(body);

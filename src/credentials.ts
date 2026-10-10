@@ -11,6 +11,7 @@
  */
 
 import { extractUserIdFromJwt } from './crypto';
+import { detectRegionFromToken, endpointUrl, profileFor } from './region';
 import { getTokenStore, hashApiKey } from './store';
 import type { KVLike } from './store';
 import type { Credential, CredentialStatus, UpstreamCredential } from './types';
@@ -37,8 +38,6 @@ const REFRESH_MARGIN_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 60 * 1000;
 /** 刷新请求超时 */
 const REFRESH_TIMEOUT_MS = 20_000;
-
-const DEFAULT_REFRESH_URL = 'https://copilot.tencent.com/v2/plugin/auth/token/refresh';
 
 /** 同一 isolate 内的刷新去重表 */
 const inFlightRefreshes = new Map<string, Promise<Credential>>();
@@ -79,7 +78,13 @@ export function getCredentialStatus(credential: Credential): CredentialStatus {
     if (credential.expiresAt && credential.expiresAt <= now && !credential.refreshToken) {
       return 'expired';
     }
+    // 两种 token 都没有 → 永远换不出可用凭证，不能报 healthy：
+    // 否则控制台显示健康、实际任何请求都失败，故障转移还会选中它
+    if (!credential.accessToken && !credential.refreshToken) return 'expired';
   }
+
+  // 控制台 Key 为空同理：不可能通过上游鉴权
+  if (credential.kind === 'ck_apikey' && !credential.apiKey) return 'expired';
 
   if ((cooldowns.get(credential.id) ?? 0) > Date.now()) return 'cooling';
   if (credential.lastError) return 'error';
@@ -155,6 +160,15 @@ interface RefreshResponse {
 
 /**
  * 调用上游刷新接口换取新的 accessToken / refreshToken。
+ *
+ * 端点按凭证区域路由：国内版 /v2/plugin/auth/token/refresh，国际版
+ * /v2/auth/token/refresh（国际版是自有端点而非 Keycloak 标准 OAuth，
+ * 取自官方 CLI 分发包，取证见 region.ts）。两者请求形态一致——
+ * 均为 `X-Refresh-Token` 头 + 空 JSON 体，因此只有 URL 随区域变化。
+ *
+ * 环境变量 UPSTREAM_REFRESH_URL 仅覆盖**国内版**端点（存量用法保持不变）；
+ * 国际版端点恒取自档案。
+ *
  * 实测响应结构为顶层 data：{ code, data: { accessToken, refreshToken, expiresIn, ... } }
  */
 export async function refreshCredential(
@@ -165,7 +179,12 @@ export async function refreshCredential(
     throw new Error('credential has no refreshToken');
   }
 
-  const url = env.UPSTREAM_REFRESH_URL || DEFAULT_REFRESH_URL;
+  const profile = profileFor(credential.region);
+  const url =
+    credential.region === 'intl'
+      ? endpointUrl(profile, 'refresh')
+      : env.UPSTREAM_REFRESH_URL || endpointUrl(profile, 'refresh');
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
 
@@ -187,7 +206,11 @@ export async function refreshCredential(
 
     const body = (await response.json()) as RefreshResponse;
     const data = body.data;
-    if (body.code !== 0 || !data?.accessToken) {
+
+    // code 仅在上游确实下发时才作校验：国内版恒为 0，国际版未观测到该字段。
+    // 若无条件要求 code===0，会把国际版的正常成功响应误判为失败。
+    const codeRejected = body.code !== undefined && body.code !== 0;
+    if (codeRejected || !data?.accessToken) {
       throw new Error(`refresh rejected: ${JSON.stringify(body).slice(0, 200)}`);
     }
 
@@ -216,8 +239,11 @@ export async function refreshCredential(
 
 /**
  * 确保凭证持有有效 token，必要时刷新（带并发去重）。
+ *
+ * 导出供管理端（连通测试 / 试跑）复用：这些入口不走转发链路，
+ * 必须显式经过本函数才能与真实请求的行为保持一致。
  */
-async function ensureValidToken(credential: Credential, env: CredentialEnv): Promise<Credential> {
+export async function ensureValidToken(credential: Credential, env: CredentialEnv): Promise<Credential> {
   const needsRefresh =
     credential.kind === 'cli_oauth' &&
     credential.refreshToken &&
@@ -272,6 +298,10 @@ function passthrough(token: string): UpstreamCredential {
     token,
     userId: extractUserIdFromJwt(token),
     kind: 'passthrough',
+    // 透传凭证没有记录可依凭,只能从令牌自身推断区域:
+    // 国际版令牌由 Keycloak 签发(iss 含 codebuddy.ai),国内版无此特征。
+    // 推断不出时按国内版处理,与存量行为一致。
+    region: detectRegionFromToken(token) ?? 'cn',
   };
 }
 
@@ -362,7 +392,22 @@ export async function resolveUpstreamCredential(
     return (b.expiresAt ?? 0) - (a.expiresAt ?? 0);
   });
 
-  for (const candidate of candidates) {
+  // 故障转移只在**同一区域**内进行。
+  //
+  // 跨区必然失败：国内令牌打到国际端点（反之亦然）一律 401。若不收敛，
+  // 一个 Key 同时绑定两区凭证时，每次 401 都会把故障转移到另一区的凭证上，
+  // 把本可通过的单区故障放大成全池不可用；反之若某个 Key 只绑了一区凭证，
+  // 反而不会被这个约束误伤。
+  //
+  // 锚点必须取自**排序后**的首选：排序结果才是真正会被使用的凭证，
+  // 若从未排序的原始数组里取锚点，两者可能不是同一个，锚定区域就会与
+  // 实际使用区域不一致。
+  const anchor = candidates.find((c) => isSelectable(c));
+  const sameRegion = anchor
+    ? candidates.filter((c) => (c.region ?? 'cn') === (anchor.region ?? 'cn'))
+    : candidates;
+
+  for (const candidate of sameRegion) {
     if (!isSelectable(candidate)) {
       failures.push(`${candidate.name}: ${getCredentialStatus(candidate)}`);
       continue;
@@ -386,6 +431,7 @@ export async function resolveUpstreamCredential(
           token: credentialToken,
           userId: effective.userId ?? extractUserIdFromJwt(credentialToken),
           kind: effective.kind,
+          region: effective.region ?? 'cn',
           credentialId: effective.id,
           credentialName: effective.name,
         },

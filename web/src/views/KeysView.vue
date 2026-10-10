@@ -29,6 +29,7 @@ import {
 } from 'naive-ui';
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
+import SegmentedControl from '../components/SegmentedControl.vue';
 import PageHeader from '../components/PageHeader.vue';
 import TableSkeleton from '../components/TableSkeleton.vue';
 import { api, type DataResponse } from '../api';
@@ -36,7 +37,7 @@ import { tick } from '../autoRefresh';
 import { useCopy } from '../clipboard';
 import { STATUS_META, fmtTime, num, relTime } from '../format';
 import { refreshKeys, store } from '../store';
-import type { KeyQuota, KeySummary } from '../types';
+import type { KeyQuota, KeySummary, Region } from '../types';
 
 const message = useMessage();
 const dialog = useDialog();
@@ -383,16 +384,41 @@ function downloadEnv(): void {
  * 必须走 /admin/api/models 而非 /v1/models：后者面向 API 客户端、要求网关 Key，
  * 管理台的 cookie 会话请求它会得到 401，而 api.ts 对 401 的处理是整页跳转
  * /admin —— 表现为「一打开 Key 页面就被弹回总览」。
+ *
+ * `region` 选择看哪个上游的目录：两个区域的模型 ID 不重叠（国内版含混元系
+ * 模型，国际版未必提供），混在一起会让绑定失去意义。
  */
 async function loadModels(): Promise<void> {
   try {
-    const res = await api<{ data?: Array<{ id: string }> }>('/admin/api/models');
+    const res = await api<{ data?: Array<{ id: string }> }>(
+      `/admin/api/models?region=${modelRegion.value}`,
+    );
     const ids = (res.data ?? []).map((m) => m.id).filter(Boolean);
-    if (ids.length > 0) availableModels.value = ids;
+    availableModels.value = ids;
   } catch {
     // 拉取失败不阻塞页面：模型绑定退化为「只能填已知清单」，配额与统计仍可用
+    availableModels.value = [];
   }
 }
+
+/** 模型目录所属区域；切换后重新拉取（影响下方模型多选的候选项） */
+const modelRegion = ref<Region>('cn');
+
+/**
+ * 分段控件的双向绑定代理。
+ *
+ * SegmentedControl 只给 v-model，不给 change 事件；这里用 setter 侦测到
+ * 值变化后触发重新拉取，让「切换区域 → 换目录」在 UI 上成为一个原子操作，
+ * 而不需要额外加一个「刷新」按钮。
+ */
+const modelRegionProxy = computed<Region>({
+  get: () => modelRegion.value,
+  set: (next) => {
+    if (next === modelRegion.value) return;
+    modelRegion.value = next;
+    void loadModels();
+  },
+});
 
 watch(tick, () => void refreshKeys());
 
@@ -659,6 +685,17 @@ onMounted(() => {
         </NFormItem>
 
         <NFormItem label="可用的模型（全部不勾选 = 不限制，即全部模型可用）">
+          <div class="model-region-bar">
+            <SegmentedControl
+              v-model="modelRegionProxy"
+              label="区域"
+              :options="[
+                { value: 'cn', label: '国内版' },
+                { value: 'intl', label: '国际版' },
+              ]"
+            />
+            <span class="sub">按上游区域选择模型目录，两个区域的模型 ID 不通用</span>
+          </div>
           <div class="model-list">
             <NCheckbox
               v-for="option in modelOptions"
@@ -1080,6 +1117,15 @@ onMounted(() => {
 
 .model-list {
   max-height: 200px;
+}
+
+/* 模型目录区域切换条 */
+.model-region-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
 }
 
 .quota-form {

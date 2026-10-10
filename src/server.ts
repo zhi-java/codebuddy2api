@@ -54,6 +54,10 @@ function buildNodeEnv(): Env {
     ...(env.ADMIN_SESSION_SECRET ? { ADMIN_SESSION_SECRET: env.ADMIN_SESSION_SECRET } : {}),
     ...(env.ADMIN_COOKIE_SECURE ? { ADMIN_COOKIE_SECURE: env.ADMIN_COOKIE_SECURE } : {}),
     ...(env.CREDENTIALS_ENC_SECRET ? { CREDENTIALS_ENC_SECRET: env.CREDENTIALS_ENC_SECRET } : {}),
+    // 计费基址同样需要注入:upstream-billing 声明了 UPSTREAM_BILLING_BASE 并
+    // 据此派生 host/x-domain,但此前 buildNodeEnv 未把它搬进 Env,导致该配置项
+    // 恒为 undefined、永远走默认国内版——看似可配,实则无效。
+    ...(env.UPSTREAM_BILLING_BASE ? { UPSTREAM_BILLING_BASE: env.UPSTREAM_BILLING_BASE } : {}),
     ...(env.GATEWAY_KEY_PREFIX ? { GATEWAY_KEY_PREFIX: env.GATEWAY_KEY_PREFIX } : {}),
     ...(env.EMIT_THINKING ? { EMIT_THINKING: env.EMIT_THINKING } : {}),
     ...(env.PUBLIC_DIR ? { PUBLIC_DIR: env.PUBLIC_DIR } : {}),
