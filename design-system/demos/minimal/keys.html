@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>API Keys · CodeBuddy Gateway</title>
+<!--
+  API Keys（极简版）
+  ─────────────────────────────────────────────────────────────
+  这一页只回答一个问题：**谁在用、用超了没有？**
+
+  相对原控制台删掉的：
+    · 用量与配额分列两栏的宽表 —— 合并成「本月用量 / 配额」一栏，
+      用一条 2px 细线表达「用了多少」
+    · 绑定凭证 ID 直接铺在表格里 —— 收成名称下的一行「绑定 N 个凭证」
+
+  保留：创建（一次性明文 + .env 片段）、编辑（绑定/模型/配额）、
+        模型别名、重置用量、删除。
+-->
+<link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+<div id="topbar"></div>
+
+<main class="page">
+  <div class="page-head">
+    <div>
+      <h1>API Keys</h1>
+      <p>客户端凭此访问网关。可绑定多个上游凭证，网关按健康度自动调度。</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn btn-primary" id="btn-create">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        创建 Key
+      </button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th style="width:240px">本月用量</th>
+          <th>配额</th>
+          <th>最后使用</th>
+          <th style="width:170px"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<!-- ══ 创建 Key ══ -->
+<div class="modal" id="m-create" role="dialog" aria-modal="true">
+  <div class="modal-head">
+    <h3>创建 API Key</h3>
+    <button class="close" data-close><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="field">
+      <label class="label" for="k-name">Key 名称</label>
+      <input class="input" id="k-name" placeholder="例如：Claude Code / Codex CLI" />
+    </div>
+    <div class="field">
+      <label class="label">绑定上游凭证</label>
+      <div id="k-creds" style="display:flex;flex-direction:column;gap:11px;margin-top:4px"></div>
+      <div class="field-hint">可多选。网关在绑定的凭证之间按健康度与剩余额度调度。</div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn" data-close>取消</button>
+    <button class="btn btn-primary" id="k-save">创建</button>
+  </div>
+</div>
+
+<!-- ══ 创建成功（一次性明文） ══ -->
+<div class="modal" id="m-created" role="dialog" aria-modal="true">
+  <div class="modal-head">
+    <h3>Key 创建成功</h3>
+    <button class="close" data-close><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="note warn" style="margin-bottom:20px">密钥明文只显示这一次，关闭后无法再次查看。请立即保存。</div>
+    <div class="field">
+      <label class="label">API Key</label>
+      <div style="display:flex;gap:8px">
+        <input class="input mono" id="c-key" readonly />
+        <button class="btn" id="c-copy">复制</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="label">.env 接入片段</label>
+      <textarea class="textarea mono" id="c-env" readonly rows="4"></textarea>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn" id="c-download">下载 .env</button>
+    <button class="btn btn-primary" data-close>我已保存</button>
+  </div>
+</div>
+
+<!-- ══ 编辑 Key ══ -->
+<div class="modal" id="m-edit" role="dialog" aria-modal="true" style="width:min(600px,calc(100vw - 32px))">
+  <div class="modal-head">
+    <h3 id="e-title">编辑 Key</h3>
+    <button class="close" data-close><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="field">
+      <label class="label" for="e-name">名称</label>
+      <input class="input" id="e-name" />
+    </div>
+    <div class="field">
+      <label class="label">绑定上游凭证</label>
+      <div id="e-creds" style="display:flex;flex-direction:column;gap:11px;margin-top:4px"></div>
+    </div>
+    <div class="field">
+      <label class="label">可用模型</label>
+      <div id="e-models" style="display:flex;flex-direction:column;gap:10px;margin-top:4px;max-height:170px;overflow-y:auto"></div>
+      <div class="field-hint">全部不勾选 = 不限制，即全部模型可用。</div>
+    </div>
+    <div class="field">
+      <label class="label">配额（留空 = 该维度不限量）</label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;margin-top:4px">
+        <div><div class="sub" style="margin-bottom:6px">每日请求数</div><input class="input" id="e-dr" placeholder="不限" /></div>
+        <div><div class="sub" style="margin-bottom:6px">每月请求数</div><input class="input" id="e-mr" placeholder="不限" /></div>
+        <div><div class="sub" style="margin-bottom:6px">每日 Token</div><input class="input" id="e-dt" placeholder="不限" /></div>
+        <div><div class="sub" style="margin-bottom:6px">每月 Token</div><input class="input" id="e-mt" placeholder="不限" /></div>
+        <div><div class="sub" style="margin-bottom:6px">每日积分</div><input class="input" id="e-dc" placeholder="不限" /></div>
+        <div><div class="sub" style="margin-bottom:6px">每月积分</div><input class="input" id="e-mc" placeholder="不限" /></div>
+      </div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-danger" id="e-delete">删除</button>
+    <div style="flex:1"></div>
+    <button class="btn" data-close>取消</button>
+    <button class="btn btn-primary" id="e-save">保存</button>
+  </div>
+</div>
+
+<!-- ══ 模型别名 ══ -->
+<div class="modal" id="m-alias" role="dialog" aria-modal="true" style="width:min(560px,calc(100vw - 32px))">
+  <div class="modal-head">
+    <h3>模型别名</h3>
+    <button class="close" data-close><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="note" style="margin-bottom:20px">把客户端发送的模型名映射到上游真实模型名，客户端零改动。</div>
+    <div id="a-rows" style="display:flex;flex-direction:column;gap:10px"></div>
+    <button class="btn btn-sm" id="a-add" style="margin-top:14px">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      添加映射
+    </button>
+  </div>
+  <div class="modal-foot">
+    <button class="btn" data-close>取消</button>
+    <button class="btn btn-primary" id="a-save">保存</button>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+mountTopbar('keys');
+
+/* ═══════════ 数据 ═══════════ */
+const CREDS = ['cli-main', 'cli-backup', 'ck-team', 'ck-lite'];
+const MODELS = ['DeepSeek-V4-Pro', 'GLM-5.3', 'Kimi-K3', 'Hunyuan-Turbos', 'Deepseek-V4-Flash'];
+
+const KEYS = [
+  { id:'key_1', name:'team-prod',    creds:['cli-main','cli-backup'], models:[], quota:{ monthlyRequests:50000, monthlyTokens:20000000 }, usage:{ monthReq:18420, monthTok:6480000 }, lastUsed:'2 分钟前', enabled:true, aliases:{} },
+  { id:'key_2', name:'team-staging', creds:['cli-main'],              models:['DeepSeek-V4-Pro'], quota:{ monthlyRequests:5000 }, usage:{ monthReq:4820, monthTok:1420000 }, lastUsed:'1 小时前', enabled:true, aliases:{ 'gpt-4o':'DeepSeek-V4-Pro' } },
+  { id:'key_3', name:'ci-runner',    creds:['ck-team','ck-lite'],     models:[], quota:{}, usage:{ monthReq:1240, monthTok:388000 }, lastUsed:'3 小时前', enabled:true, aliases:{} },
+  { id:'key_4', name:'legacy-cli',   creds:[],                        models:[], quota:{}, usage:{ monthReq:0, monthTok:0 }, lastUsed:'—', enabled:false, aliases:{} },
+];
+
+let editing = null;
+
+/* ═══════════ 渲染表格 ═══════════ */
+function render() {
+  document.getElementById('rows').innerHTML = KEYS.map((k) => {
+    const qr = k.quota.monthlyRequests;
+    const qt = k.quota.monthlyTokens;
+    const pctR = qr ? Math.round((k.usage.monthReq / qr) * 100) : null;
+    const pctT = qt ? Math.round((k.usage.monthTok / qt) * 100) : null;
+    const pct = pctR ?? pctT ?? null;
+    const tone = pct === null ? 'var(--text-3)' : pct >= 90 ? 'var(--bad)' : pct >= 75 ? 'var(--warn)' : 'var(--text)';
+
+    return `<tr data-id="${k.id}">
+      <td>
+        <div class="cell-main">${k.name}${k.enabled ? '' : ' <span class="sub">（已停用）</span>'}</div>
+        <div class="cell-sub">${k.creds.length ? `绑定 ${k.creds.length} 个凭证 · ${k.creds.join('、')}` : '未绑定凭证'}</div>
+      </td>
+      <td>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:6px">
+          <span class="mono" style="font-size:12px">${fmt.compact(k.usage.monthReq)} 次</span>
+          <span class="sub mono">${fmt.compact(k.usage.monthTok)} tok</span>
+        </div>
+        <div style="height:2px;background:var(--line)">
+          <i style="display:block;height:100%;width:${pct === null ? 0 : Math.min(100, pct)}%;background:${tone}"></i>
+        </div>
+      </td>
+      <td><span class="mono" style="font-size:12px">${qr ? `${fmt.compact(qr)} 次/月` : '不限'}</span></td>
+      <td><span class="sub">${k.lastUsed}</span></td>
+      <td>
+        <div class="row-acts">
+          <button class="btn-text" data-act="alias">别名</button>
+          <button class="btn-text" data-act="reset">重置用量</button>
+          <button class="btn-text" data-act="edit">编辑</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+/* ═══════════ 凭证复选组（创建/编辑共用） ═══════════ */
+function credChecks(container, checked) {
+  container.innerHTML = CREDS.map((c) =>
+    `<label class="check"><input type="checkbox" value="${c}" ${checked.includes(c) ? 'checked' : ''} /><i></i>${c}</label>`
+  ).join('');
+}
+
+/* ═══════════ 创建 ═══════════ */
+document.getElementById('btn-create').addEventListener('click', () => {
+  document.getElementById('k-name').value = '';
+  credChecks(document.getElementById('k-creds'), ['cli-main']);
+  Overlay.open('m-create');
+});
+
+document.getElementById('k-save').addEventListener('click', () => {
+  const name = document.getElementById('k-name').value.trim();
+  if (!name) { toast('请填写 Key 名称'); return; }
+  const creds = [...document.querySelectorAll('#k-creds input:checked')].map((i) => i.value);
+  const plain = 'sk-gw-' + Array.from({ length: 32 }, () => 'abcdef0123456789'[Math.floor(Math.random() * 16)]).join('');
+
+  KEYS.unshift({ id: 'key_' + Date.now(), name, creds, models: [], quota: {}, usage: { monthReq: 0, monthTok: 0 }, lastUsed: '—', enabled: true, aliases: {} });
+
+  document.getElementById('c-key').value = plain;
+  document.getElementById('c-env').value =
+    `OPENAI_BASE_URL=http://192.168.1.246:8787/v1\nOPENAI_API_KEY=${plain}\nANTHROPIC_BASE_URL=http://192.168.1.246:8787\nANTHROPIC_API_KEY=${plain}`;
+
+  Overlay.close();
+  render();
+  setTimeout(() => Overlay.open('m-created'), 220);
+});
+
+document.getElementById('c-copy').addEventListener('click', () => {
+  const v = document.getElementById('c-key').value;
+  navigator.clipboard?.writeText(v).then(() => toast('已复制 API Key'), () => toast('复制失败，请手动选择'));
+});
+
+document.getElementById('c-download').addEventListener('click', () => {
+  const blob = new Blob([document.getElementById('c-env').value], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '.env';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('已下载 .env');
+});
+
+/* ═══════════ 编辑 ═══════════ */
+function openEdit(k) {
+  editing = k;
+  document.getElementById('e-title').textContent = `编辑 · ${k.name}`;
+  document.getElementById('e-name').value = k.name;
+  credChecks(document.getElementById('e-creds'), k.creds);
+
+  // 模型：勾选 = 限制为该集合；全不勾 = 不限
+  document.getElementById('e-models').innerHTML = MODELS.map((m) =>
+    `<label class="check"><input type="checkbox" value="${m}" ${k.models.includes(m) ? 'checked' : ''} /><i></i><span class="mono" style="font-size:12px">${m}</span></label>`
+  ).join('');
+
+  const q = k.quota;
+  document.getElementById('e-dr').value = q.dailyRequests ?? '';
+  document.getElementById('e-mr').value = q.monthlyRequests ?? '';
+  document.getElementById('e-dt').value = q.dailyTokens ?? '';
+  document.getElementById('e-mt').value = q.monthlyTokens ?? '';
+  document.getElementById('e-dc').value = q.dailyCredit ?? '';
+  document.getElementById('e-mc').value = q.monthlyCredit ?? '';
+
+  Overlay.open('m-edit');
+}
+
+document.getElementById('e-save').addEventListener('click', () => {
+  if (!editing) return;
+  editing.name = document.getElementById('e-name').value.trim() || editing.name;
+  editing.creds = [...document.querySelectorAll('#e-creds input:checked')].map((i) => i.value);
+  editing.models = [...document.querySelectorAll('#e-models input:checked')].map((i) => i.value);
+
+  const pick = (id) => {
+    const v = document.getElementById(id).value.trim();
+    return v === '' ? undefined : Number(v);
+  };
+  editing.quota = {
+    dailyRequests: pick('e-dr'), monthlyRequests: pick('e-mr'),
+    dailyTokens: pick('e-dt'), monthlyTokens: pick('e-mt'),
+    dailyCredit: pick('e-dc'), monthlyCredit: pick('e-mc'),
+  };
+  Object.keys(editing.quota).forEach((k) => editing.quota[k] === undefined && delete editing.quota[k]);
+
+  Overlay.close();
+  render();
+  toast('已保存');
+});
+
+document.getElementById('e-delete').addEventListener('click', () => {
+  if (!editing) return;
+  const i = KEYS.findIndex((k) => k.id === editing.id);
+  if (i >= 0) KEYS.splice(i, 1);
+  Overlay.close();
+  render();
+  toast('已删除该 Key');
+});
+
+/* ═══════════ 模型别名 ═══════════ */
+let aliasTarget = null;
+
+function renderAliasRows(pairs) {
+  document.getElementById('a-rows').innerHTML = pairs.map(([from, to]) => `
+    <div style="display:flex;gap:8px;align-items:center">
+      <input class="input mono" data-from value="${from}" placeholder="客户端发送的名称" style="font-size:12px" />
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6b6b74" stroke-width="1.8" style="flex:none"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      <input class="input mono" data-to value="${to}" placeholder="上游真实模型" style="font-size:12px" />
+      <button class="close" data-del><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>`).join('');
+}
+
+document.getElementById('a-add').addEventListener('click', () => {
+  const pairs = [...document.querySelectorAll('#a-rows > div')].map((d) => [
+    d.querySelector('[data-from]').value, d.querySelector('[data-to]').value,
+  ]);
+  pairs.push(['', '']);
+  renderAliasRows(pairs);
+});
+
+document.getElementById('a-rows').addEventListener('click', (e) => {
+  const del = e.target.closest('[data-del]');
+  if (!del) return;
+  const pairs = [...document.querySelectorAll('#a-rows > div')]
+    .filter((d) => d !== del.parentElement)
+    .map((d) => [d.querySelector('[data-from]').value, d.querySelector('[data-to]').value]);
+  renderAliasRows(pairs);
+});
+
+document.getElementById('a-save').addEventListener('click', () => {
+  if (!aliasTarget) return;
+  const map = {};
+  document.querySelectorAll('#a-rows > div').forEach((d) => {
+    const f = d.querySelector('[data-from]').value.trim();
+    const t = d.querySelector('[data-to]').value.trim();
+    if (f && t) map[f] = t;
+  });
+  aliasTarget.aliases = map;
+  Overlay.close();
+  render();
+  toast(Object.keys(map).length ? `已保存 ${Object.keys(map).length} 条映射` : '已清空映射');
+});
+
+/* ═══════════ 行内操作 ═══════════ */
+document.getElementById('rows').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const k = KEYS.find((x) => x.id === btn.closest('tr').dataset.id);
+  if (!k) return;
+
+  if (btn.dataset.act === 'edit') openEdit(k);
+  else if (btn.dataset.act === 'alias') {
+    aliasTarget = k;
+    renderAliasRows(Object.entries(k.aliases));
+    Overlay.open('m-alias');
+  } else if (btn.dataset.act === 'reset') {
+    k.usage = { monthReq: 0, monthTok: 0 };
+    render();
+    toast('已重置该 Key 的用量统计');
+  }
+});
+
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => Overlay.close()));
+
+render();
+</script>
+</body>
+</html>

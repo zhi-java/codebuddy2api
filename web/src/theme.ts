@@ -1,37 +1,39 @@
 /**
- * Naive UI 主题覆写（浅色）。
+ * Naive UI 主题覆写（浅色 · 极简）。
  *
- * 本项目**只支持浅色**：不再有深色主题、不再有主题切换器。
- * 此前同时维护 dark/light 两套覆写，且切换器只驱动本文件、不驱动
- * styles.css 的 CSS 变量，导致手动选「浅色」时页面底色仍是深色。
+ * 本项目**只支持浅色**：没有深色主题、没有主题切换器。
+ * 取值口径与 tokens.css 完全一致（同一套色板，两处消费）。
  *
- * 取值口径：语义色与 tokens.css 保持一致（同一套色板，两处消费）。
- * 具体对比度实测值见 tokens.css 注释。
+ * 极简口径下与上一版的三处差别：
+ *   1. 圆角收敛：10px → 8px，小号 8px → 6px
+ *   2. 阴影移除：卡片/表格一律无阴影，层次由发丝线与留白承担；
+ *      仅浮层（modal/popover）保留一层阴影
+ *   3. 强调色从绿改为蓝（#2563eb）：蓝色只用于「可点击」与「当前选中」，
+ *      不再作为品牌装饰色；状态色另用绿/黄/红
  */
 
 import type { GlobalThemeOverrides } from 'naive-ui';
 
 /** 与 tokens.css 同步的调色板 */
 const palette = {
-  bg: '#eef1f6',
+  bg: '#fafafa',
   surface: '#ffffff',
-  surface2: '#f6f8fb',
-  inset: '#f6f8fb',
-  border: '#cbd5e1',
-  borderSoft: '#e4e9f0',
-  text: '#0f172a',
-  text2: '#475569',
-  text3: '#526074',
-  accent: '#14793a',
-  accentHover: '#127336',
-  danger: '#c81e1e',
-  warn: '#9a5b08',
-  info: '#0369a1',
-  hover: '#f6f8fb',
+  surface2: '#fafafa',
+  surface3: '#f4f4f5',
+  line: '#ededed',
+  lineStrong: '#dcdcdc',
+  text: '#18181b',
+  text2: '#52525b',
+  text3: '#6b6b74',
+  accent: '#2563eb',
+  accentHover: '#1d4ed8',
+  ok: '#15803d',
+  warn: '#a16207',
+  bad: '#b91c1c',
 } as const;
 
-const shadowCard = '0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04)';
-const shadowPop = '0 12px 32px -8px rgba(15, 23, 42, 0.16), 0 4px 8px -4px rgba(15, 23, 42, 0.08)';
+/** 极简下唯一的阴影：仅浮层使用 */
+const shadowPop = '0 8px 28px -8px rgba(24, 24, 27, 0.16)';
 
 const a = palette.accent;
 /** 强调色的半透明变体（rgba 需要数值，不能直接拼接 hex） */
@@ -46,97 +48,118 @@ export const themeOverrides: GlobalThemeOverrides = {
     primaryColorHover: palette.accentHover,
     primaryColorPressed: palette.accentHover,
     primaryColorSuppl: palette.accent,
-    infoColor: palette.info,
-    successColor: palette.accent,
+    infoColor: palette.accent,
+    successColor: palette.ok,
     warningColor: palette.warn,
-    errorColor: palette.danger,
+    errorColor: palette.bad,
     textColorBase: palette.text,
     textColor1: palette.text,
     textColor2: palette.text2,
     textColor3: palette.text3,
-    borderColor: palette.border,
-    dividerColor: palette.borderSoft,
+    borderColor: palette.lineStrong,
+    dividerColor: palette.line,
     bodyColor: palette.bg,
     cardColor: palette.surface,
     modalColor: palette.surface,
     popoverColor: palette.surface,
     tableColor: palette.surface,
     inputColor: palette.surface,
-    tableHeaderColor: palette.surface2,
-    hoverColor: palette.hover,
-    boxShadow1: shadowCard,
+    tableHeaderColor: palette.surface,
+    hoverColor: palette.surface2,
+    // 极简下组件层不用阴影；浮层给一层
+    boxShadow1: 'none',
     boxShadow2: shadowPop,
     borderRadius: '8px',
     borderRadiusSmall: '6px',
-    fontSize: '13.5px',
-    fontSizeSmall: '12.5px',
+    fontSize: '13px',
+    fontSizeSmall: '12px',
     // 与 styles.css 的 body 字体栈保持一致，否则 Naive 组件（按钮/表格/下拉）
     // 会各自回退到系统中文字体，与自绘部分产生肉眼可见的字形差异
     fontFamily:
       "'Inter Variable', Inter, ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', " +
       "'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
     fontWeightStrong: '600',
-    heightMedium: '34px',
-    heightSmall: '28px',
-    lineHeight: '1.5',
+    heightMedium: '32px',
+    heightSmall: '26px',
+    lineHeight: '1.6',
   },
   Layout: {
     siderColor: palette.surface,
     headerColor: palette.surface,
     bodyColor: palette.bg,
-    siderBorderColor: palette.borderSoft,
+    siderBorderColor: palette.line,
   },
   Card: {
-    borderColor: palette.borderSoft,
+    borderColor: palette.line,
     color: palette.surface,
-    paddingMedium: '16px 18px',
-    titleFontSizeMedium: '13.5px',
+    paddingMedium: '18px 20px',
+    titleFontSizeMedium: '13px',
     titleFontWeight: '600',
   },
   DataTable: {
-    thColor: palette.surface2,
+    // 极简表格：表头无底色，只靠一条发丝下线分隔；行悬停用极淡底
+    thColor: palette.surface,
     tdColor: palette.surface,
-    tdColorHover: palette.surface2,
-    borderColor: palette.borderSoft,
+    tdColorHover: 'rgba(0,0,0,0.014)',
+    thColorHover: palette.surface,
+    borderColor: palette.line,
     thTextColor: palette.text3,
     thFontWeight: '600',
     tdTextColor: palette.text,
-    thPaddingMedium: '10px 12px',
-    tdPaddingMedium: '11px 12px',
+    thPaddingMedium: '0px 16px 11px',
+    tdPaddingMedium: '15px 16px',
+    borderRadius: '0',
   },
   Menu: {
     itemTextColor: palette.text2,
     itemTextColorHover: palette.text,
-    itemTextColorActive: palette.accent,
-    itemTextColorActiveHover: palette.accent,
-    itemColorHover: palette.hover,
-    itemColorActive: accentAlpha(0.1),
-    itemColorActiveHover: accentAlpha(0.14),
+    itemTextColorActive: palette.text,
+    itemTextColorActiveHover: palette.text,
+    itemColorHover: palette.surface2,
+    itemColorActive: 'transparent',
+    itemColorActiveHover: 'transparent',
     itemIconColor: palette.text3,
-    itemIconColorActive: palette.accent,
+    itemIconColorActive: palette.text,
     itemIconColorHover: palette.text,
-    itemIconColorActiveHover: palette.accent,
-    itemHeight: '36px',
-    borderRadius: '7px',
+    itemIconColorActiveHover: palette.text,
+    itemHeight: '34px',
+    borderRadius: '6px',
     groupTextColor: palette.text3,
   },
   Button: {
     textColorGhost: palette.text2,
     textColorGhostHover: palette.text,
-    borderGhost: palette.border,
-    borderGhostHover: palette.border,
+    borderGhost: palette.lineStrong,
+    borderGhostHover: palette.lineStrong,
+    // 极简按钮：无阴影
+    boxShadow: 'none',
+    boxShadowHover: 'none',
+    boxShadowPressed: 'none',
+    boxShadowFocus: 'none',
   },
   Tag: {
-    borderRadius: '999px',
+    borderRadius: '4px',
     heightSmall: '20px',
     fontSizeSmall: '11.5px',
   },
   Input: {
-    border: `1px solid ${palette.border}`,
-    borderHover: `1px solid ${palette.accent}`,
+    border: `1px solid ${palette.lineStrong}`,
+    borderHover: `1px solid ${palette.text3}`,
     borderFocus: `1px solid ${palette.accent}`,
     boxShadowFocus: `0 0 0 3px ${accentAlpha(0.16)}`,
     color: palette.surface,
+  },
+  Select: {
+    peers: {
+      InternalSelection: {
+        border: `1px solid ${palette.lineStrong}`,
+        borderHover: `1px solid ${palette.text3}`,
+        borderFocus: `1px solid ${palette.accent}`,
+        borderActive: `1px solid ${palette.accent}`,
+        boxShadowFocus: `0 0 0 3px ${accentAlpha(0.16)}`,
+        boxShadowActive: `0 0 0 3px ${accentAlpha(0.16)}`,
+      },
+    },
   },
   Switch: {
     railColorActive: palette.accent,
@@ -147,23 +170,57 @@ export const themeOverrides: GlobalThemeOverrides = {
   },
   Drawer: {
     color: palette.surface,
-    titleFontSize: '15px',
-    titleFontWeight: '600',
+    titleFontSize: '14px',
+    titleFontWeight: '640',
+    // 抽屉是浮层，保留一层阴影与页面分离
+    boxShadow: shadowPop,
   },
   Modal: {
     color: palette.surface,
-    titleFontSize: '15px',
-    titleFontWeight: '600',
+    titleFontSize: '14px',
+    titleFontWeight: '640',
   },
   Progress: {
-    railColor: palette.inset,
+    railColor: palette.surface3,
   },
   Tooltip: {
-    color: '#1e293b',
+    color: palette.text,
     textColor: '#ffffff',
     padding: '6px 10px',
+    borderRadius: '6px',
   },
   Popover: {
     color: palette.surface,
+    boxShadow: shadowPop,
+  },
+  Dropdown: {
+    color: palette.surface,
+    boxShadow: shadowPop,
+  },
+  Skeleton: {
+    color: palette.surface3,
+    colorEnd: palette.surface2,
+  },
+  Empty: {
+    iconColor: palette.lineStrong,
+    textColor: palette.text3,
+  },
+  Checkbox: {
+    border: `1px solid ${palette.lineStrong}`,
+    borderFocus: `1px solid ${palette.accent}`,
+    boxShadowFocus: `0 0 0 3px ${accentAlpha(0.16)}`,
+  },
+  Radio: {
+    buttonBorderColor: palette.lineStrong,
+    buttonTextColor: palette.text2,
+  },
+  Message: {
+    color: palette.text,
+    textColor: '#ffffff',
+    boxShadow: shadowPop,
+  },
+  Notification: {
+    color: palette.surface,
+    boxShadow: shadowPop,
   },
 };

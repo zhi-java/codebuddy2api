@@ -1,0 +1,502 @@
+/* ═══════════════════════════════════════════════════════════════════
+   CodeBuddy Gateway · 极简设计系统
+   ───────────────────────────────────────────────────────────────────
+   设计原则（六条，违反任一条即为不合格）：
+
+   1. 一个强调色。蓝色只用于「可点击」与「当前选中」，绝不用来装饰。
+      状态色（绿/黄/红）只在确实表达状态时出现，且只以小圆点或文字呈现。
+   2. 层次靠留白与发丝线，不靠阴影。全局只有一个近乎不可见的阴影层级。
+   3. 没有装饰性元素：无渐变、无圆角胶囊、无背景色块标签、无图标堆砌。
+   4. 数字用等宽字体对齐，标签用小号大写字母 + 字距，形成「标签—读数」的
+      固定节奏。一屏内的读数不超过 6 个。
+   5. 每个页面只回答一个问题，其余信息降级或删除。
+   6. 动效只用于「状态变化」（展开、加载、流式），不做入场动画。
+
+   对比度（相对 --bg #fafafa）：
+     text #18181b 16.9:1 │ text-2 #52525b 7.6:1 │ text-3 #6b6b74 5.1:1
+     accent #2563eb 4.9:1（白字填充 5.17:1）
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+
+  /* 发丝线分两档：line 用于分隔（几乎不可见），line-strong 用于输入框边界 */
+  --line: #ededed;
+  --line-strong: #dcdcdc;
+
+  --text: #18181b;
+  --text-2: #52525b;
+  --text-3: #6b6b74;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eef2ff;
+
+  --ok: #15803d;
+  --warn: #a16207;
+  --bad: #b91c1c;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+
+  /* 极简下唯一的阴影：仅用于浮层，卡片一律不用 */
+  --shadow-pop: 0 8px 28px -8px rgba(24, 24, 27, 0.16);
+
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --sans: "Inter Variable", Inter, ui-sans-serif, system-ui, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
+  --max: 1180px;
+  --gutter: 28px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── 工具类 ── */
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.tnum { font-variant-numeric: tabular-nums; }
+.sub { color: var(--text-3); font-size: 12px; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+.nowrap { white-space: nowrap; }
+
+/* 标签：小号大写 + 字距。极简下不用背景色块，只用字重与颜色区分 */
+.label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ═══════════════ 顶栏 ═══════════════ */
+.topbar {
+  position: sticky; top: 0; z-index: 30;
+  background: rgba(250, 250, 250, 0.86);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-inner {
+  display: flex; align-items: center; gap: 28px;
+  width: 100%; max-width: var(--max); margin: 0 auto;
+  padding: 0 var(--gutter);
+  height: 52px;
+}
+
+.brand { display: flex; align-items: center; gap: 9px; flex: none; }
+.brand i {
+  width: 20px; height: 20px; border-radius: 5px;
+  display: grid; place-items: center;
+  background: var(--text); color: #fff;
+}
+.brand b { font-size: 13px; font-weight: 640; letter-spacing: -0.01em; white-space: nowrap; }
+
+/* 导航：纯文字链接。选中态用颜色 + 一条 2px 下划线，不用胶囊 */
+.nav { display: flex; align-items: center; gap: 22px; flex: 1; min-width: 0; }
+.nav a {
+  position: relative;
+  font-size: 13px; color: var(--text-3); white-space: nowrap;
+  padding: 15px 0;
+  transition: color 160ms var(--ease);
+}
+.nav a:hover { color: var(--text); }
+.nav a.on { color: var(--text); font-weight: 600; }
+.nav a.on::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 2px; background: var(--text); border-radius: 1px;
+}
+
+.topbar-right { display: flex; align-items: center; gap: 14px; flex: none; }
+
+/* 服务状态：一个圆点 + 一行文字，不使用彩色胶囊 */
+.status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
+.status i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
+.status.warn i { background: var(--warn); }
+.status.bad i { background: var(--bad); }
+
+/* ═══════════════ 页面 ═══════════════ */
+.page {
+  width: 100%; max-width: var(--max); margin: 0 auto;
+  padding: 36px var(--gutter) 88px;
+}
+
+.page-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap; margin-bottom: 32px;
+}
+.page-head h1 { margin: 0; font-size: 22px; font-weight: 640; letter-spacing: -0.025em; }
+.page-head p { margin: 7px 0 0; font-size: 13px; color: var(--text-3); max-width: 560px; }
+.page-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* 区块间距：统一 40px，靠留白建立层次 */
+.section { margin-bottom: 40px; }
+.section:last-child { margin-bottom: 0; }
+
+.section-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.section-head h2 { margin: 0; font-size: 13px; font-weight: 640; letter-spacing: -0.005em; }
+.section-head .extra { display: flex; align-items: center; gap: 12px; }
+
+/* ═══════════════ 读数（KPI） ═══════════════ */
+/* 极简做法：不做卡片，用发丝竖线分隔的读数带。一屏最多 4 个 */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); }
+.stat { padding: 0 24px; border-left: 1px solid var(--line); }
+.stat:first-child { padding-left: 0; border-left: none; }
+.stat-k { margin-bottom: 8px; }
+.stat-v {
+  font-size: 28px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.stat-v small { font-size: 13px; font-weight: 500; color: var(--text-3); margin-left: 4px; letter-spacing: 0; }
+.stat-d { margin-top: 7px; font-size: 11.5px; color: var(--text-3); }
+
+/* ═══════════════ 面板 ═══════════════ */
+/* 极简下面板只有一条上发丝线 + 标题，没有外框、没有圆角、没有阴影 */
+.panel { border-top: 1px solid var(--line); padding-top: 20px; }
+.panel-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.panel-title { font-size: 13px; font-weight: 640; }
+.panel-extra { display: flex; align-items: center; gap: 12px; }
+
+/* 需要明确边界的块（表单、抽屉内）才用外框 */
+.box {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+/* ═══════════════ 按钮 ═══════════════ */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12.5px; font-weight: 550;
+  white-space: nowrap;
+  transition: border-color 160ms var(--ease), color 160ms var(--ease), background 160ms var(--ease);
+}
+.btn:hover { border-color: var(--text-3); color: var(--text); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+.btn-danger:hover { border-color: var(--bad); color: var(--bad); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+/* 文字按钮：最低视觉权重，用于「取消」「查看全部」这类次级动作 */
+.btn-text {
+  border: none; background: transparent; padding: 4px 6px;
+  color: var(--text-3); font-size: 12.5px; font-weight: 550;
+  border-radius: var(--radius-sm);
+  transition: color 160ms var(--ease);
+}
+.btn-text:hover { color: var(--accent); }
+.btn-icon { padding: 7px; }
+
+/* ═══════════════ 状态 ═══════════════ */
+/* 状态 = 一个圆点 + 文字。不用彩色底、不用边框、不用胶囊 */
+.st { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.st i { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--text-3); }
+.st.ok i { background: var(--ok); }
+.st.warn i { background: var(--warn); }
+.st.bad i { background: var(--bad); }
+
+/* 类型标记：等宽小字，无背景 */
+.kind { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
+
+/* ═══════════════ 表格 ═══════════════ */
+/* 极简表格：无外框、无斑马纹、表头只有一条下线，行间靠留白 */
+.table-wrap { overflow-x: auto; margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter); }
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left;
+  padding: 0 16px 11px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+thead th:first-child { padding-left: 0; }
+thead th:last-child { padding-right: 0; text-align: right; }
+tbody td {
+  padding: 15px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+tbody td:first-child { padding-left: 0; }
+tbody td:last-child { padding-right: 0; text-align: right; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr { transition: background 140ms var(--ease); }
+tbody tr:hover { background: rgba(0, 0, 0, 0.014); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.act { text-align: right; }
+
+/* 表格里的主标识：名称 + 一行次要信息 */
+.cell-main { font-weight: 550; color: var(--text); }
+.cell-sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+
+/* 行内操作：默认隐形，悬停浮现，避免表格被按钮塞满 */
+.row-acts { display: flex; gap: 2px; justify-content: flex-end; opacity: 0; transition: opacity 150ms var(--ease); }
+tr:hover .row-acts, tr:focus-within .row-acts { opacity: 1; }
+
+/* ═══════════════ 表单控件 ═══════════════ */
+.field { margin-bottom: 18px; }
+.field:last-child { margin-bottom: 0; }
+.field > .label { display: block; margin-bottom: 8px; }
+.field-hint { margin-top: 7px; font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
+
+.input, .select, .textarea {
+  width: 100%; padding: 8px 11px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--surface); font: inherit; font-size: 13px; color: var(--text);
+  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease);
+}
+.input::placeholder, .textarea::placeholder { color: var(--text-3); }
+.input:focus, .select:focus, .textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.textarea { resize: vertical; min-height: 76px; line-height: 1.65; font-size: 12.5px; }
+.select {
+  appearance: none; cursor: pointer; padding-right: 30px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b74' stroke-width='2.2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 11px center;
+}
+.search { position: relative; }
+.search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }
+.search .input { padding-left: 31px; }
+
+/* 分段控件：极简版用下划线表示选中，不用滑块背景 */
+.seg { display: flex; gap: 18px; border-bottom: 1px solid var(--line); }
+.seg button {
+  position: relative; border: none; background: transparent;
+  padding: 0 0 9px; font-size: 12.5px; font-weight: 550; color: var(--text-3);
+  transition: color 160ms var(--ease);
+}
+.seg button:hover { color: var(--text); }
+.seg button.on { color: var(--text); font-weight: 620; }
+.seg button.on::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px;
+  height: 2px; background: var(--text);
+}
+.seg button .n { margin-left: 6px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+/* 开关：细长型，与整体克制感一致 */
+/* label 本身可点击（点击文字区域也能切换），故必须带 cursor:pointer；
+   只给内层 input 设是不够的 —— input 被 opacity:0 覆盖，实际命中区域是 label */
+.switch { position: relative; width: 34px; height: 19px; flex: none; display: inline-block; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; z-index: 2; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--line-strong); transition: background 200ms var(--ease); }
+.switch span::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 15px; height: 15px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.25);
+  transition: transform 200ms var(--ease);
+}
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(15px); }
+
+/* 复选：极简用原生风格的自绘方框 */
+.check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.check input { position: absolute; opacity: 0; pointer-events: none; }
+.check i {
+  width: 15px; height: 15px; border-radius: 4px; flex: none;
+  border: 1px solid var(--line-strong); background: var(--surface);
+  display: grid; place-items: center;
+  transition: background 150ms var(--ease), border-color 150ms var(--ease);
+}
+.check input:checked + i { background: var(--accent); border-color: var(--accent); }
+.check input:checked + i::after {
+  content: ""; width: 8px; height: 4px;
+  border-left: 2px solid #fff; border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+.check input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ═══════════════ 键值列表 ═══════════════ */
+.kv { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.kv li {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 20px;
+  padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 12.5px;
+}
+.kv li:last-child { border-bottom: none; }
+.kv .k { color: var(--text-3); flex: none; }
+.kv .v { color: var(--text); text-align: right; word-break: break-all; }
+
+/* ═══════════════ 浮层 ═══════════════ */
+.scrim {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(24, 24, 27, 0.28);
+  opacity: 0; pointer-events: none;
+  transition: opacity 200ms var(--ease);
+}
+.scrim.on { opacity: 1; pointer-events: auto; }
+
+.modal {
+  position: fixed; z-index: 91; left: 50%; top: 50%;
+  transform: translate(-50%, calc(-50% + 10px)) scale(0.985);
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  background: var(--surface); border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+  display: flex; flex-direction: column; overflow: hidden;
+  opacity: 0; pointer-events: none;
+  transition: opacity 200ms var(--ease), transform 200ms var(--ease);
+}
+.modal.on { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 18px 22px; border-bottom: 1px solid var(--line);
+}
+.modal-head h3 { margin: 0; font-size: 14px; font-weight: 640; }
+.modal-body { padding: 22px; overflow-y: auto; }
+.modal-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 16px 22px; border-top: 1px solid var(--line);
+}
+
+.drawer {
+  position: fixed; z-index: 91; top: 0; right: 0; bottom: 0;
+  width: min(400px, 100vw);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  display: flex; flex-direction: column;
+  transform: translateX(100%); pointer-events: none;
+  transition: transform 240ms var(--ease);
+}
+.drawer.on { transform: none; pointer-events: auto; }
+.drawer-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 18px 22px; border-bottom: 1px solid var(--line); flex: none;
+}
+.drawer-head h3 { margin: 0; font-size: 14px; font-weight: 640; }
+.drawer-body { padding: 22px; overflow-y: auto; flex: 1; }
+
+/* 关闭按钮：一个细十字，不用圆底 */
+.close {
+  width: 26px; height: 26px; border-radius: var(--radius-sm);
+  display: grid; place-items: center; border: none; background: transparent;
+  color: var(--text-3);
+  transition: color 150ms var(--ease), background 150ms var(--ease);
+}
+.close:hover { color: var(--text); background: rgba(0, 0, 0, 0.04); }
+
+/* ═══════════════ 空态 ═══════════════ */
+.empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 72px 20px; text-align: center; color: var(--text-3);
+}
+.empty svg { color: var(--line-strong); }
+.empty b { color: var(--text-2); font-size: 13.5px; font-weight: 600; }
+.empty span { font-size: 12.5px; max-width: 380px; line-height: 1.7; }
+
+/* ═══════════════ 提示条（内联提示，非浮层） ═══════════════ */
+/* 极简下提示条也不上背景色，只用左侧一条 2px 线 */
+.note {
+  border-left: 2px solid var(--line-strong);
+  padding: 2px 0 2px 14px;
+  font-size: 12.5px; color: var(--text-3); line-height: 1.7;
+}
+.note.warn { border-left-color: var(--warn); color: var(--warn); }
+.note.bad { border-left-color: var(--bad); color: var(--bad); }
+
+/* ═══════════════ 图表 ═══════════════ */
+.chart { width: 100%; display: block; overflow: visible; }
+.chart-wrap { position: relative; }
+/* 十字准线：一条 1px 竖线 + 一个浮层读数 */
+.crosshair {
+  position: absolute; top: 0; bottom: 20px; width: 1px;
+  background: var(--line-strong); pointer-events: none;
+  opacity: 0; transition: opacity 120ms ease;
+}
+.crosshair.on { opacity: 1; }
+.tip {
+  position: absolute; pointer-events: none; z-index: 5;
+  background: var(--text); color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 8px 11px; font-size: 11.5px; line-height: 1.7;
+  white-space: nowrap;
+  opacity: 0; transform: translate(-50%, -6px);
+  transition: opacity 130ms var(--ease), transform 130ms var(--ease);
+}
+.tip.on { opacity: 1; transform: translate(-50%, -6px); }
+.tip b { display: block; color: rgba(255, 255, 255, 0.6); font-weight: 500; margin-bottom: 3px; }
+.tip .row { display: flex; align-items: center; gap: 8px; }
+.tip .row .num { margin-left: auto; font-family: var(--mono); font-weight: 600; }
+
+/* 迷你趋势：贴在读数下方的细线，仅作佐证 */
+.spark { width: 100%; height: 24px; display: block; margin-top: 12px; }
+
+/* ═══════════════ 列表（错误流、模型用量） ═══════════════ */
+.list { display: flex; flex-direction: column; }
+.list-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 0; border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.list-item:last-child { border-bottom: none; }
+.list-item .t { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); flex: none; }
+.list-item .code {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 620; flex: none;
+}
+.list-item .code.e5 { color: var(--bad); }
+.list-item .code.e4 { color: var(--warn); }
+.list-item .msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+
+/* 横向占比条：极简版用 2px 细线，不用圆角进度条 */
+.bar-row { display: flex; align-items: center; gap: 14px; padding: 10px 0; }
+.bar-row .nm { font-family: var(--mono); font-size: 12px; color: var(--text-2); flex: none; width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row .track { flex: 1; height: 2px; background: var(--line); }
+.bar-row .fill { height: 100%; background: var(--text); transition: width 600ms var(--ease); }
+.bar-row .v { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-2); flex: none; width: 56px; text-align: right; }
+
+/* 双栏区块：宽屏并排，窄屏折成单栏 */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+@media (max-width: 860px) { .two-col { grid-template-columns: 1fr; gap: 32px; } }
+
+/* ═══════════════ 响应式 ═══════════════ */
+@media (max-width: 900px) {
+  .nav { display: none; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stat { padding: 0 20px; }
+  .stat:nth-child(3) { padding-left: 0; border-left: none; margin-top: 22px; }
+  .stat:nth-child(4) { margin-top: 22px; }
+}
+@media (max-width: 640px) {
+  :root { --gutter: 18px; }
+  .page { padding-top: 24px; }
+  .page-head h1 { font-size: 19px; }
+  .stats { grid-template-columns: 1fr; }
+  .stat { padding: 0; border-left: none; }
+  .stat + .stat { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+  .stat-v { font-size: 24px; }
+  .table-wrap { margin: 0; padding: 0; }
+  .bar-row .nm { width: 96px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

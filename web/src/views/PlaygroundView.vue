@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 试跑 Playground：真流式的多轮对话调试台。
+ * 对话 Playground：真流式的多轮对话调试台。
  *
  * 与「聚合后一次性返回」相比，这里的价值在于：
  *   - 逐字看到思考与正文，能判断流式是否真的通畅；
@@ -43,6 +43,17 @@ const messages = ref<PlaygroundMessage[]>([]);
 const streaming = ref(false);
 const controller = ref<AbortController | null>(null);
 const scrollRef = ref<HTMLElement | null>(null);
+/** 系统提示词收进折叠区：日常对话不改它，不该常驻占版面 */
+const showAdvanced = ref(false);
+/** 已折叠思考过程的消息下标。思考读一次就够，之后应让位给正文。 */
+const collapsed = ref(new Set<number>());
+
+function toggleReasoning(index: number): void {
+  const next = new Set(collapsed.value);
+  if (next.has(index)) next.delete(index);
+  else next.add(index);
+  collapsed.value = next;
+}
 
 const modelOptions = [
   'deepseek-v4.1-flash',
@@ -139,86 +150,102 @@ onMounted(async () => {
 
 <template>
   <div class="page stack">
-    <PageHeader title="试跑" desc="用真实凭证流式对话，验证连通性、思考输出与首字延迟">
+    <PageHeader title="对话" desc="用真实凭证流式对话，验证连通性、思考输出与首字延迟">
       <NButton secondary :disabled="messages.length === 0" @click="clear">
-        <template #icon><AppIcon name="trash" :size="15" /></template>
-        清空对话
+        <template #icon><AppIcon name="trash" :size="14" /></template>
+        清空
       </NButton>
     </PageHeader>
 
     <div class="layout">
-      <!-- 左：参数 -->
-      <NCard size="small" class="params">
-        <template #header>请求参数</template>
-        <NForm label-placement="top" size="small">
-          <NFormItem label="上游凭证">
-            <NSelect v-model:value="credentialId" :options="credentialOptions" placeholder="选择凭证" />
-          </NFormItem>
-          <NFormItem label="模型">
-            <NSelect v-model:value="model" :options="modelOptions" filterable tag />
-          </NFormItem>
-          <NFormItem label="系统提示（可选）">
-            <NInput v-model:value="system" type="textarea" :rows="3" placeholder="你是 CodeBuddy 助手…" />
-          </NFormItem>
-          <div class="two">
-            <NFormItem label="温度">
-              <NInputNumber v-model:value="temperature" :min="0" :max="2" :step="0.1" style="width: 100%" />
-            </NFormItem>
-            <NFormItem label="最大输出 tokens">
-              <NInputNumber v-model:value="maxTokens" :min="64" :max="32768" :step="512" style="width: 100%" />
-            </NFormItem>
+      <!-- 左：参数。极简下不用卡片包裹，直接以「标签 + 控件」纵向排列 -->
+      <aside class="params">
+        <div class="field">
+          <label class="label">上游凭证</label>
+          <NSelect v-model:value="credentialId" :options="credentialOptions" placeholder="选择凭证" size="small" />
+        </div>
+
+        <div class="field">
+          <label class="label">模型</label>
+          <NSelect v-model:value="model" :options="modelOptions" filterable tag size="small" />
+        </div>
+
+        <div class="field">
+          <label class="label">温度</label>
+          <NInputNumber v-model:value="temperature" :min="0" :max="2" :step="0.1" size="small" style="width: 100%" />
+        </div>
+
+        <div class="field">
+          <label class="label">最大输出 tokens</label>
+          <NInputNumber v-model:value="maxTokens" :min="64" :max="32768" :step="512" size="small" style="width: 100%" />
+        </div>
+
+        <!-- 系统提示词收进折叠区：日常对话不改它，不该常驻占版面 -->
+        <div class="field">
+          <button class="adv-toggle" type="button" @click="showAdvanced = !showAdvanced">
+            <AppIcon name="chevron" :size="12" :style="{ transform: showAdvanced ? 'rotate(180deg)' : '' }" />
+            高级参数
+          </button>
+          <div v-if="showAdvanced" class="adv">
+            <label class="label">系统提示词</label>
+            <NInput v-model:value="system" type="textarea" :rows="3" placeholder="你是 CodeBuddy 助手…" size="small" />
           </div>
-        </NForm>
-        <div class="sub">凭证与模型决定上游账号；失败会在此直接显示上游错误码。</div>
-      </NCard>
+        </div>
+      </aside>
 
       <!-- 右：对话 -->
-      <NCard size="small" class="chat">
-        <template #header>
-          <span>对话</span>
-          <NTag v-if="streaming" size="small" :bordered="false" type="info" style="margin-left: 8px">流式输出中</NTag>
-        </template>
-        <template #header-extra>
-          <span class="sub">{{ messages.length }} 条消息</span>
-        </template>
+      <section class="chat">
+        <div class="chat-head">
+          <span class="sub" v-if="streaming">流式输出中…</span>
+          <span class="sub" v-else>{{ messages.length }} 条消息</span>
+        </div>
 
         <div ref="scrollRef" class="stream">
-          <NEmpty v-if="messages.length === 0" description="输入问题后发送，回复会逐字流式显示" />
+          <div v-if="messages.length === 0" class="blank">
+            <AppIcon name="send" :size="24" />
+            <b>还没有请求</b>
+            <span>输入问题后发送，回复会逐字流式显示；思考过程可折叠查看。</span>
+          </div>
+
           <div v-for="(item, index) in messages" :key="index" class="msg" :class="item.role">
-            <div class="msg-head">
-              <span class="who">{{ item.role === 'user' ? '我' : '模型' }}</span>
-              <span v-if="item.model" class="sub mono">{{ item.model }}</span>
-              <span v-if="item.durationMs" class="sub">{{ fmtMs(item.durationMs) }}</span>
-              <span v-if="item.finishReason" class="sub">finish={{ item.finishReason }}</span>
-              <NButton v-if="item.role === 'assistant' && item.content" quaternary size="tiny" @click="copyReply(item)">
-                <template #icon><AppIcon name="copy" :size="13" /></template>
-              </NButton>
+            <div class="msg-role">
+              <span class="who">{{ item.role === 'user' ? '我' : item.model || '模型' }}</span>
+              <span v-if="item.durationMs" class="meta">{{ fmtMs(item.durationMs) }}</span>
+              <span v-if="item.finishReason" class="meta">finish={{ item.finishReason }}</span>
+              <button
+                v-if="item.role === 'assistant' && item.content"
+                class="copy-btn"
+                type="button"
+                title="复制回复正文"
+                @click="copyReply(item)"
+              >
+                <AppIcon name="copy" :size="13" />
+              </button>
             </div>
 
-            <div v-if="item.reasoning" class="reasoning">
-              <div class="reasoning-head">
-                <AppIcon name="activity" :size="13" />
-                <span>思考过程</span>
-              </div>
-              <pre class="mono">{{ item.reasoning }}</pre>
+            <!-- 思考过程：左侧一条细线，不用彩色底 -->
+            <div v-if="item.reasoning" class="reasoning" :class="{ collapsed: collapsed.has(index) }">
+              <button class="reasoning-head" type="button" @click="toggleReasoning(index)">
+                <AppIcon name="chevron" :size="12" class="chev" />
+                思考过程
+              </button>
+              <pre class="reasoning-body">{{ item.reasoning }}</pre>
             </div>
 
-            <div v-if="item.content" class="bubble">
-              <pre class="mono">{{ item.content }}</pre>
-            </div>
+            <div v-if="item.content" class="bubble">{{ item.content }}</div>
             <div v-else-if="streaming && item.role === 'assistant' && !item.error" class="bubble typing">
               <span class="dot" /><span class="dot" /><span class="dot" />
             </div>
 
-            <div v-if="item.error" class="error">
-              <AppIcon name="alert" :size="14" />
+            <div v-if="item.error" class="err">
+              <AppIcon name="alert" :size="13" />
               <span>{{ item.error }}</span>
             </div>
 
             <div v-if="item.usage" class="usage">
-              <span>输入 {{ usageNum(item.usage, 'prompt_tokens') ?? '—' }}</span>
-              <span>输出 {{ usageNum(item.usage, 'completion_tokens') ?? '—' }}</span>
-              <span>合计 {{ usageNum(item.usage, 'total_tokens') ?? '—' }} tokens</span>
+              <span>输入 <b>{{ usageNum(item.usage, 'prompt_tokens') ?? '—' }}</b></span>
+              <span>输出 <b>{{ usageNum(item.usage, 'completion_tokens') ?? '—' }}</b></span>
+              <span>合计 <b>{{ usageNum(item.usage, 'total_tokens') ?? '—' }}</b> tokens</span>
             </div>
           </div>
         </div>
@@ -232,18 +259,19 @@ onMounted(async () => {
             placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
             @keydown.enter.exact.prevent="send"
           />
-          <div class="composer-actions">
-            <NButton v-if="streaming" type="warning" secondary @click="stop">
-              <template #icon><AppIcon name="stop" :size="15" /></template>
-              停止
+          <div class="composer-acts">
+            <span class="sub">{{ canSend || streaming ? '' : '请选择凭证并输入内容' }}</span>
+            <NButton v-if="streaming" type="error" secondary @click="stop">
+              <template #icon><AppIcon name="stop" :size="14" /></template>
+              中止
             </NButton>
             <NButton v-else type="primary" :disabled="!canSend" @click="send">
-              <template #icon><AppIcon name="send" :size="15" /></template>
+              <template #icon><AppIcon name="send" :size="14" /></template>
               发送
             </NButton>
           </div>
         </div>
-      </NCard>
+      </section>
     </div>
   </div>
 </template>
@@ -251,120 +279,235 @@ onMounted(async () => {
 <style scoped>
 .layout {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) 1fr;
-  gap: 16px;
+  grid-template-columns: 260px 1fr;
+  gap: 40px;
   align-items: start;
 }
 
-@media (max-width: 1020px) {
+@media (max-width: 980px) {
   .layout {
     grid-template-columns: 1fr;
+    gap: 28px;
   }
 }
 
-.two {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+/* ── 左：参数 ──
+   极简下不用卡片包裹，直接以「标签 + 控件」纵向排列，靠间距分组。 */
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
-/*
- * 对话区撑满视口剩余高度，输入框固定在底部：
- * 这是聊天类界面的主流行为，也让「停止/发送」始终在拇指可及处。
- * 减去的是顶栏 + 内容内边距 + 页头的高度。
- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-3);
+  transition: color var(--dur) var(--ease);
+}
+
+.adv-toggle:hover {
+  color: var(--text);
+}
+
+.adv-toggle :deep(svg) {
+  transition: transform var(--dur) var(--ease);
+}
+
+.adv {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+/* ── 右：对话 ──
+   撑满视口剩余高度，输入框固定在底部 —— 这是聊天类界面的主流行为，
+   也让「中止/发送」始终在拇指可及处。 */
 .chat {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 208px);
-  min-height: 460px;
+  min-height: 440px;
+  min-width: 0;
 }
 
-.chat :deep(.n-card__content) {
+.chat-head {
   display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 
 .stream {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding-right: 4px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 24px;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
-@media (max-width: 1020px) {
-  .chat {
-    height: auto;
-  }
-
-  .stream {
-    max-height: 60vh;
-  }
+.blank {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--text-3);
 }
 
-.msg-head {
+.blank :deep(svg) {
+  color: var(--line-strong);
+}
+
+.blank b {
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.blank span {
+  font-size: 12.5px;
+  max-width: 320px;
+  line-height: 1.7;
+}
+
+.msg-role {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 6px;
-  color: var(--text-3);
-  font-size: 11.5px;
+  margin-bottom: 9px;
 }
 
 .who {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 640;
   color: var(--text-2);
 }
 
-.bubble {
-  background: var(--surface-3);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 10px 12px;
+.meta {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+
+/* 复制按钮默认隐形，悬停浮现 */
+.copy-btn {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 140ms var(--ease), color 140ms var(--ease);
+}
+
+.msg:hover .copy-btn,
+.copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--accent);
+}
+
+/* 用户消息右对齐、浅底无边框。不用蓝色气泡 —— 蓝色是「可点击」专用。 */
+.msg.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.msg.user .msg-role {
+  justify-content: flex-end;
 }
 
 .msg.user .bubble {
-  background: var(--accent-soft);
-  border-color: transparent;
-}
-
-.bubble pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 14px;
   font-size: 13px;
   line-height: 1.65;
+  max-width: 76%;
 }
 
+.bubble {
+  font-size: 13px;
+  line-height: 1.75;
+  max-width: 92%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 思考过程：左侧一条细线，不用彩色底 —— 极简下不用背景色分区 */
 .reasoning {
-  border-left: 2px solid var(--border);
-  padding-left: 10px;
-  margin-bottom: 8px;
+  border-left: 2px solid var(--line-strong);
+  padding-left: 13px;
+  margin-bottom: 14px;
+  max-width: 92%;
 }
 
 .reasoning-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 7px;
   font-size: 11.5px;
+  font-weight: 600;
   color: var(--text-3);
-  margin-bottom: 4px;
+  transition: color var(--dur) var(--ease);
 }
 
-.reasoning pre {
+.reasoning-head:hover {
+  color: var(--text-2);
+}
+
+.reasoning-head .chev {
+  transition: transform var(--dur) var(--ease);
+}
+
+.reasoning.collapsed .reasoning-head .chev {
+  transform: rotate(-90deg);
+}
+
+.reasoning-body {
   margin: 0;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--text-3);
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 12px;
-  color: var(--text-3);
-  max-height: 200px;
-  overflow: auto;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: var(--mono);
+}
+
+.reasoning.collapsed .reasoning-body {
+  display: none;
 }
 
 .typing {
@@ -399,40 +542,51 @@ onMounted(async () => {
   }
 }
 
-.error {
+.err {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  color: var(--danger);
+  margin-top: 9px;
+  color: var(--bad);
   font-size: 12.5px;
 }
 
 .usage {
   display: flex;
-  gap: 14px;
-  margin-top: 8px;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 11px;
   font-size: 11.5px;
   color: var(--text-3);
-  font-variant-numeric: tabular-nums;
+}
+
+.usage b {
+  font-weight: 600;
+  color: var(--text-2);
+  font-family: var(--mono);
 }
 
 .composer {
-  margin-top: 12px;
-  border-top: 1px solid var(--border-soft);
-  padding-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
 }
 
-.composer-actions {
+.composer-acts {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 12px;
+  margin-top: 10px;
 }
 
-:deep(.mono) {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+@media (max-width: 980px) {
+  .chat {
+    height: auto;
+  }
+
+  .stream {
+    max-height: 58vh;
+  }
 }
 </style>

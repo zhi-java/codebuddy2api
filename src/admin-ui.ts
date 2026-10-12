@@ -133,248 +133,200 @@ document.addEventListener('click', function (event) {
 `;
 
 // ── 共享样式 ──────────────────────────────────────────────────────────────
-
 const PUBLIC_CSS = `
-  /* 浅色令牌：与 web/src/tokens.css 同源（公开页不走前端构建，只能内联一份）。
-     一致性由 scripts/check-tokens.mjs 在构建前校验，漂移会导致构建失败。 */
+  /* 浅色极简令牌：与 web/src/tokens.css 同源（公开页不走前端构建，只能内联一份）。
+     一致性由 web/scripts/check-tokens.mjs 在构建前校验，漂移会导致构建失败。
+
+     设计原则与控制台一致：一个强调色（只用于可点击与选中）、层次靠发丝线与留白、
+     无装饰性元素、动效只用于状态变化。 */
   :root {
-    --bg:#eef1f6; --surface:#ffffff; --surface-2:#f6f8fb; --surface-3:#f1f4f8; --inset:#f6f8fb;
-    --border:#cbd5e1; --border-soft:#e4e9f0;
-    --text:#0f172a; --text-2:#475569; --text-3:#526074;
-    --accent:#14793a; --accent-hover:#127336; --accent-ink:#ffffff;
-    --accent-soft:#e3f3e8;
-    --warn:#9a5b08; --danger:#c81e1e; --info:#0369a1;
-    --radius-page:14px; --radius-page-sm:9px;
-    --ease:cubic-bezier(.16,1,.3,1);
-    --shadow-sm:0 1px 2px rgba(15,23,42,.06);
-    --shadow-card:0 1px 2px rgba(15,23,42,.05), 0 1px 3px rgba(15,23,42,.04);
-    --shadow-raised:0 4px 12px -2px rgba(15,23,42,.08), 0 2px 4px -2px rgba(15,23,42,.05);
-    --shadow-pop:0 12px 32px -8px rgba(15,23,42,.16), 0 4px 8px -4px rgba(15,23,42,.08);
-    --shadow:var(--shadow-card);
+    --bg:#fafafa; --surface:#ffffff; --surface-2:#fafafa; --surface-3:#f4f4f5; --inset:#fafafa;
+    --line:#ededed; --line-strong:#dcdcdc;
+    --border:var(--line-strong); --border-soft:var(--line);
+    --text:#18181b; --text-2:#52525b; --text-3:#6b6b74;
+    --accent:#2563eb; --accent-hover:#1d4ed8; --accent-ink:#ffffff; --accent-soft:#eef2ff;
+    --ok:#15803d; --warn:#a16207; --bad:#b91c1c;
+    --danger:var(--bad); --info:var(--accent);
+    --radius:8px; --radius-sm:6px; --radius-lg:10px;
+    --ease:cubic-bezier(.16,1,.3,1); --dur:160ms;
+    --shadow-sm:none; --shadow-card:none; --shadow-raised:none;
+    --shadow-pop:0 8px 28px -8px rgba(24,24,27,.16);
+    --shadow:none;
     color-scheme:light;
   }
   * { box-sizing:border-box; }
   body {
     margin:0; background:var(--bg); color:var(--text);
-    font:15px/1.65 Inter,ui-sans-serif,system-ui,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font:13px/1.6 Inter,ui-sans-serif,system-ui,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
     -webkit-font-smoothing:antialiased;
     display:flex; flex-direction:column; min-height:100vh;
   }
-  a { color:inherit; }
-  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-variant-ligatures:none; }
+  a { color:inherit; text-decoration:none; }
+  button { font:inherit; cursor:pointer; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .mono { font-family:ui-monospace,"SF Mono","Cascadia Mono",Consolas,monospace; font-variant-ligatures:none; }
+  .sub { color:var(--text-3); font-size:12px; }
+  .label { font-size:10.5px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--text-3); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
 
-  /* ── 顶栏 ── */
+  /* ── 顶栏 ──
+     纯文字导航，选中态用颜色 + 2px 下划线；不用胶囊背景块。 */
   .nav {
     position:sticky; top:0; z-index:20;
-    display:flex; align-items:center; justify-content:space-between; gap:16px;
-    padding:12px 24px;
-    background:color-mix(in srgb, var(--bg) 82%, transparent);
-    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-    border-bottom:1px solid var(--border-soft);
+    display:flex; align-items:center; gap:28px;
+    width:100%; max-width:1180px; margin:0 auto;
+    padding:0 28px; height:52px;
+    background:rgba(250,250,250,.86);
+    backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--line);
   }
-  .nav-brand { display:flex; align-items:center; gap:10px; text-decoration:none; }
+  .nav-brand { display:flex; align-items:center; gap:9px; flex:none; }
   .logo {
-    width:32px; height:32px; flex:none; border-radius:9px; display:grid; place-items:center;
-    /* 渐变两端都用达标绿：#14793a 上白图标 5.49:1，#0f6b32 更深 */
-    color:var(--accent-ink); background:linear-gradient(180deg,#178a43,#0f6b32);
-    box-shadow:0 0 0 1px rgba(20,121,58,.3), 0 8px 18px -8px rgba(20,121,58,.55);
+    width:20px; height:20px; flex:none; border-radius:5px; display:grid; place-items:center;
+    color:#fff; background:var(--text);
   }
-  .nav-brand b { display:block; font-size:14px; font-weight:650; letter-spacing:-.01em; }
-  .nav-links { display:flex; align-items:center; gap:4px; }
-  .nav-link {
-    padding:7px 12px; border-radius:var(--radius-page-sm); font-size:13.5px; color:var(--text-2);
-    text-decoration:none; cursor:pointer; transition:color .18s var(--ease), background .18s var(--ease);
+  .nav-brand b { display:block; font-size:13px; font-weight:640; letter-spacing:-.01em; white-space:nowrap; }
+  .nav-links { display:flex; align-items:center; gap:22px; margin-left:auto; }
+  .nav-link { font-size:13px; color:var(--text-3); transition:color var(--dur) var(--ease); }
+  .nav-link:hover { color:var(--text); }
+
+  /* 按钮：主按钮用强调色，次按钮只用描边 */
+  .btn {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:7px 14px; border-radius:var(--radius-sm);
+    border:1px solid var(--line-strong); background:var(--surface);
+    color:var(--text-2); font-size:12.5px; font-weight:550; white-space:nowrap;
+    transition:border-color var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease);
   }
-  .nav-link:hover { color:var(--text); background:var(--surface-2); }
-  .nav-link:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .btn:hover { border-color:var(--text-3); color:var(--text); }
+  .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn-primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); color:#fff; }
+  .btn-sm { padding:4px 10px; font-size:12px; }
 
   /* ── 布局 ── */
-  .wrap { width:min(1120px,100%); margin:0 auto; padding:0 24px; flex:1; }
-  .section { margin-top:64px; }
-  .section-head { margin-bottom:20px; }
-  .section-head h2 { margin:0; font-size:19px; font-weight:650; letter-spacing:-.02em; }
+  .wrap { width:100%; max-width:1180px; margin:0 auto; padding:0 28px; flex:1; }
+  .section { margin-top:56px; }
+  .section-head { margin-bottom:16px; }
+  .section-head h2 { margin:0; font-size:13px; font-weight:640; letter-spacing:-.005em; }
 
-  /* ── Hero ── */
-  .hero { position:relative; padding:72px 0 8px; }
-  .hero::before {
-    content:''; position:absolute; inset:-72px -24px auto -24px; height:420px; z-index:-1;
-    background:
-      radial-gradient(620px 300px at 78% -12%, var(--accent-soft), transparent 62%),
-      radial-gradient(520px 280px at 4% 8%, rgba(56,189,248,.10), transparent 60%);
-    pointer-events:none;
-  }
-  .hero h1 {
-    margin:18px 0 0; font-size:clamp(30px,5.2vw,50px); line-height:1.1;
-    letter-spacing:-.035em; font-weight:680;
-  }
-  .hero h1 em { font-style:normal; color:var(--accent); }
-  .hero-cta { display:flex; gap:10px; flex-wrap:wrap; margin-top:28px; }
+  /* ── Banner：一句话，不放大标题、不加装饰 ── */
+  .hero { padding:64px 0 52px; max-width:660px; }
+  .hero h1 { margin:0 0 14px; font-size:27px; font-weight:620; letter-spacing:-.035em; line-height:1.35; }
+  .hero p { margin:0; font-size:14px; line-height:1.75; color:var(--text-3); }
 
-  .pill {
-    display:inline-flex; align-items:center; gap:8px; padding:6px 14px; border-radius:999px;
-    font-size:12.5px; font-weight:550; border:1px solid var(--border);
-    background:var(--surface); color:var(--text-2);
+  /* ── 页签：接入方式 / 模型目录 ── */
+  .tabs { display:flex; gap:22px; border-bottom:1px solid var(--line); margin-bottom:26px; }
+  .tab {
+    position:relative; border:none; background:transparent; padding:0 0 12px;
+    font-size:13.5px; font-weight:550; color:var(--text-3);
+    transition:color var(--dur) var(--ease);
   }
-  .pill .dot { width:7px; height:7px; border-radius:50%; background:var(--text-3); flex:none; }
-  .pill.good { border-color:color-mix(in srgb, var(--accent) 40%, transparent); color:var(--accent); }
-  .pill.good .dot { background:var(--accent); box-shadow:0 0 0 4px var(--accent-soft); animation:pulse 2.6s var(--ease) infinite; }
-  .pill.warn { border-color:color-mix(in srgb, var(--warn) 40%, transparent); color:var(--warn); }
-  .pill.warn .dot { background:var(--warn); }
-  .pill.bad { border-color:color-mix(in srgb, var(--danger) 40%, transparent); color:var(--danger); }
-  .pill.bad .dot { background:var(--danger); }
-  @keyframes pulse { 0%,100% { box-shadow:0 0 0 4px var(--accent-soft); } 50% { box-shadow:0 0 0 9px transparent; } }
+  .tab:hover { color:var(--text); }
+  .tab.active { color:var(--text); font-weight:620; }
+  .tab.active::after {
+    content:''; position:absolute; left:0; right:0; bottom:-1px; height:2px; background:var(--text);
+  }
+  .tab .n { margin-left:7px; font-size:12px; color:var(--text-3); font-variant-numeric:tabular-nums; }
+  .panel { display:none; }
+  .panel.active { display:block; }
 
-  /* ── 按钮 ── */
-  .btn {
-    display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:var(--radius-page-sm);
-    font:inherit; font-size:14px; font-weight:600; text-decoration:none; cursor:pointer;
-    border:1px solid transparent; transition:background .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease);
+  /* ── 端点：三行，不用卡片 ── */
+  .endpoints { margin-bottom:26px; }
+  .ep-row {
+    display:flex; align-items:baseline; gap:16px;
+    padding:13px 0; border-bottom:1px solid var(--line);
   }
-  .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-  .btn-primary { background:var(--accent); color:var(--accent-ink); }
-  .btn-primary:hover { background:var(--accent-hover); }
+  .ep-row:first-child { border-top:1px solid var(--line); }
+  .ep-name { font-size:13px; font-weight:600; flex:none; width:150px; }
+  .ep-path { font-family:ui-monospace,"SF Mono",Consolas,monospace; font-size:12px; color:var(--text-2); flex:1; min-width:0; }
+  .ep-path b { color:var(--accent); font-weight:620; }
+  .ep-auth { font-family:ui-monospace,"SF Mono",Consolas,monospace; font-size:11.5px; color:var(--text-3); flex:none; }
 
-  /* ── 状态指标条 ── */
-  /* 弹性行而非栅格：数据点只有 2 个，不需要列数自适应。
-     margin 与 .section 统一为 64px，避免 hero→stats 44px、其余 64px 的参差。 */
-  .stats {
-    display:flex; align-items:stretch; gap:28px; margin-top:64px;
-    flex-wrap:wrap;
-  }
-  .stat-divider { width:1px; background:var(--border-soft); flex:none; }
-  .stat {
-    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page);
-    padding:16px 18px; display:flex; flex-direction:column; gap:5px;
-    /* 内容决定宽度并设下限：避免又扁又宽（此前每项被拉到 530px） */
-    flex:0 1 auto; min-width:190px;
-  }
-  .stat-label { font-size:12px; color:var(--text-3); }
-  .stat-value { font-size:22px; font-weight:650; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
-  .stat-value.ok { color:var(--accent); }
-  .stat-value.warn { color:var(--warn); }
-  .stat-value.bad { color:var(--danger); }
-  .stat-hint { font-size:11.5px; color:var(--text-3); }
-
-  /* ── 协议卡（只放名称/端点/鉴权头，代码示例见下方全宽面板） ── */
-  .cards { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
-  .card {
-    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page);
-    padding:18px 20px; display:flex; flex-direction:column; gap:8px;
-    transition:border-color .2s var(--ease), transform .2s var(--ease), box-shadow .2s var(--ease);
-  }
-  .card:hover { border-color:var(--border); transform:translateY(-2px); box-shadow:var(--shadow-raised); }
-  .card-top { display:flex; align-items:center; gap:10px; }
-  .tag {
-    font-size:10.5px; font-weight:650; letter-spacing:.09em; text-transform:uppercase;
-    color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:3px 9px;
-  }
-  .card h3 { margin:0; font-size:15.5px; font-weight:650; }
-  .endpoint { font-size:12px; color:var(--text-2); }
-  .endpoint b { color:var(--accent); font-weight:650; }
-  .auth { font-size:11px; color:var(--text-3); }
-
-  /* ── 全宽代码面板（tab 切换协议）──
-     实测 curl 命令最长需 ~660px，3 列卡内可用仅 ~304px（54% 被截断）。
-     提到全宽后单行可完整显示，无需横向滚动。 */
-  .code-panel {
-    margin-top:14px; background:var(--surface); border:1px solid var(--border-soft);
-    border-radius:var(--radius-page); overflow:hidden;
-  }
+  /* ── 代码面板 ── */
+  .code-panel { border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
   .code-head {
-    display:flex; align-items:center; justify-content:space-between; gap:12px;
-    padding:8px 10px 8px 12px; border-bottom:1px solid var(--border-soft);
+    display:flex; align-items:center; gap:2px;
+    padding:6px 8px; border-bottom:1px solid var(--line);
   }
-  .code-tabs { display:flex; gap:4px; flex-wrap:wrap; }
   .code-tab {
-    padding:6px 12px; font:inherit; font-size:12.5px; font-weight:550;
-    color:var(--text-2); background:transparent; border:1px solid transparent;
-    border-radius:var(--radius-page-sm); cursor:pointer;
-    transition:color .18s var(--ease), background .18s var(--ease), border-color .18s var(--ease);
+    padding:5px 11px; border:none; background:transparent; border-radius:var(--radius-sm);
+    font-size:12px; font-weight:550; color:var(--text-3);
+    transition:background var(--dur) var(--ease), color var(--dur) var(--ease);
   }
-  .code-tab:hover { color:var(--text); background:var(--surface-2); }
-  .code-tab.active { color:var(--accent); background:var(--accent-soft); border-color:transparent; }
-  .code-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-  .code-view { display:none; }
+  .code-tab:hover { color:var(--text); }
+  .code-tab.active { background:var(--bg); color:var(--text); font-weight:620; }
+  .copy { margin-left:auto; }
+  .code-view { display:none; padding:14px 18px; }
   .code-view.active { display:block; }
-  .code-panel pre { margin:0; padding:14px 16px; overflow-x:auto; }
-  .code-panel code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    font-size:12.5px; line-height:1.8; color:var(--text-2); white-space:pre; }
-  .copy {
-    padding:5px 12px; font:inherit; font-size:12px; white-space:nowrap;
-    color:var(--text-2); background:var(--surface-2); border:1px solid var(--border);
-    border-radius:var(--radius-page-sm); cursor:pointer;
-    transition:color .18s var(--ease), border-color .18s var(--ease), background .18s var(--ease);
+  .code-view pre { margin:0; overflow-x:auto; }
+  .code-view code {
+    font-family:ui-monospace,"SF Mono",Consolas,monospace;
+    font-size:12px; line-height:1.75; color:var(--text-2); white-space:pre;
   }
-  .copy:hover { color:var(--text); border-color:var(--accent); }
-  .copy.done { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
+
+  /* ── 模型目录：密集网格，每行 6 个 ── */
+  .region { display:flex; gap:2px; margin-bottom:16px; }
+  .region button {
+    padding:5px 12px; border:none; background:transparent; border-radius:var(--radius-sm);
+    font-size:12.5px; font-weight:550; color:var(--text-3);
+    transition:background var(--dur) var(--ease), color var(--dur) var(--ease);
+  }
+  .region button:hover { color:var(--text); }
+  .region button.active { background:var(--bg); color:var(--text); font-weight:620; }
+
+  .model-grid {
+    display:grid; gap:1px;
+    grid-template-columns:repeat(auto-fill,minmax(186px,1fr));
+    background:var(--line); border:1px solid var(--line);
+    border-radius:var(--radius); overflow:hidden;
+  }
+  .model {
+    background:var(--surface); padding:11px 13px;
+    display:flex; flex-direction:column; gap:4px; min-width:0;
+    transition:background 140ms var(--ease);
+  }
+  .model:hover { background:var(--bg); }
+  .model .nm { font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .model .id { font-family:ui-monospace,"SF Mono",Consolas,monospace; font-size:11px; color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .model .meta { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:3px; }
+  .model .cr { font-family:ui-monospace,"SF Mono",Consolas,monospace; font-size:11px; color:var(--text-2); font-variant-numeric:tabular-nums; }
+  .model .ctx { font-family:ui-monospace,"SF Mono",Consolas,monospace; font-size:10.5px; color:var(--text-3); }
+
+  /* ── 空态 ── */
+  .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:64px 20px; text-align:center; color:var(--text-3); }
+  .empty-state p { margin:0; }
+  .empty-state .sub { font-size:12.5px; max-width:380px; line-height:1.7; }
+
+  /* ── 健康页 ── */
+  .kv { list-style:none; margin:0; padding:0; }
+  .kv li { display:flex; justify-content:space-between; gap:20px; padding:12px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .kv li:last-child { border-bottom:none; }
+  .kv span { color:var(--text-3); }
+  .kv b { font-weight:550; text-align:right; word-break:break-all; }
 
   /* ── 页脚 ── */
   .foot {
-    width:min(1120px,100%); margin:64px auto 0; padding:20px 24px calc(28px + env(safe-area-inset-bottom));
-    border-top:1px solid var(--border-soft); color:var(--text-3); font-size:12.5px;
-    display:flex; gap:8px 20px; flex-wrap:wrap; align-items:center;
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    width:100%; max-width:1180px; margin:56px auto 0;
+    padding:20px 28px; border-top:1px solid var(--line);
+    font-size:12px; color:var(--text-3);
   }
-  .foot a { color:var(--text-3); text-decoration:none; }
-  .foot a:hover { color:var(--accent); }
-
-  /* ── 简单页头(模型目录 / 健康页) ── */
-  .page-head { padding:44px 0 24px; }
-  .page-head h1 { margin:0 0 8px; font-size:clamp(24px,3.6vw,32px); font-weight:680; letter-spacing:-.03em; }
-  .page-head p { margin:0; color:var(--text-2); font-size:14px; }
-
-  /* ── 模型目录 ── */
-  .region-tabs { display:flex; gap:8px; margin-bottom:18px; }
-  .region-tab {
-    font-size:13px; color:var(--text-2); text-decoration:none;
-    padding:6px 14px; border-radius:999px;
-    border:1px solid var(--border-soft); background:var(--surface);
-    transition:color .2s var(--ease), border-color .2s var(--ease);
-  }
-  .region-tab:hover { color:var(--text-1); border-color:var(--border); }
-  .region-tab.active {
-    color:var(--text-1); font-weight:600;
-    border-color:var(--border); background:var(--surface-2, var(--surface));
-  }
-  .empty-state {
-    background:var(--surface); border:1px solid var(--border-soft);
-    border-radius:var(--radius-page-sm); padding:28px 20px; text-align:center;
-  }
-  .empty-state p { margin:0; font-size:14px; }
-  .empty-state .sub { margin-top:8px; font-size:12.5px; color:var(--text-3); }
-
-  .model-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); }
-  .model {
-    background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-page-sm);
-    padding:14px 16px; transition:border-color .2s var(--ease);
-  }
-  .model:hover { border-color:var(--border); }
-  .model-id { font-size:13px; font-weight:600; word-break:break-all; }
-  .model-name { font-size:12px; color:var(--text-3); margin:3px 0 9px; }
-  .model-meta { display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:11.5px; }
-  .model-meta .num { color:var(--text-3); font-variant-numeric:tabular-nums; }
-
-  /* ── 健康面板 ── */
-  .health {
-    display:flex; align-items:center; gap:18px; background:var(--surface);
-    border:1px solid var(--border-soft); border-radius:var(--radius-page); padding:28px 30px;
-  }
-  .health-dot {
-    width:14px; height:14px; flex:none; border-radius:50%; background:var(--accent);
-    box-shadow:0 0 0 5px var(--accent-soft); animation:pulse 2.6s var(--ease) infinite;
-  }
-  .health b { display:block; font-size:18px; font-weight:650; }
-  .health span { color:var(--text-2); font-size:13.5px; }
+  .foot a { color:var(--text-3); transition:color var(--dur) var(--ease); }
+  .foot a:hover { color:var(--text); }
 
   @media (max-width:640px) {
-    .nav { padding:10px 16px; }
-    .nav-link { padding:7px 9px; font-size:13px; }
-    .wrap { padding:0 16px; }
-    .hero { padding:44px 0 0; }
-    .section { margin-top:48px; }
-    .foot { padding:18px 16px calc(24px + env(safe-area-inset-bottom)); }
+    .nav, .wrap, .foot { padding-left:18px; padding-right:18px; }
+    .nav { gap:14px; }
+    .nav-links { gap:14px; }
+    .hero { padding:40px 0 34px; }
+    .hero h1 { font-size:21px; }
+    .model-grid { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+    .ep-row { flex-wrap:wrap; gap:6px 14px; }
+    .ep-name { width:100%; }
+    .ep-auth { width:100%; }
   }
-  @media (prefers-reduced-motion: reduce) {
-    * { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+  @media (prefers-reduced-motion:reduce) {
+    *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
   }
 `;
 
@@ -396,19 +348,20 @@ export function renderLoginPage(): string {
 <style>
   ${PUBLIC_CSS}
   body { display:grid; place-items:center; padding:24px; }
+  /* 极简：卡片用发丝描边而非阴影，圆角收敛到 8px */
   .login {
-    width:min(400px,100%); background:var(--surface); border:1px solid var(--border-soft);
-    border-radius:18px; padding:32px 30px; box-shadow:var(--shadow);
+    width:min(380px,100%); background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius); padding:30px 28px;
   }
-  .login .logo { width:42px; height:42px; border-radius:11px; margin-bottom:20px; }
-  .login h1 { margin:0 0 6px; font-size:19px; font-weight:680; letter-spacing:-.02em; }
-  .login .sub { margin:0 0 24px; color:var(--text-2); font-size:13px; }
+  .login .logo { width:36px; height:36px; border-radius:9px; margin-bottom:18px; }
+  .login h1 { margin:0 0 6px; font-size:18px; font-weight:640; letter-spacing:-.02em; }
+  .login .sub { margin:0 0 22px; color:var(--text-3); font-size:12.5px; }
   .field { margin-bottom:16px; }
   .field label { display:block; font-size:12.5px; font-weight:550; color:var(--text-2); margin-bottom:7px; }
   .field input {
-    width:100%; padding:10px 12px; font:inherit; font-size:14px; color:var(--text);
-    background:var(--inset); border:1px solid var(--border); border-radius:var(--radius-page-sm);
-    transition:border-color .18s var(--ease), box-shadow .18s var(--ease);
+    width:100%; padding:9px 12px; font:inherit; font-size:13.5px; color:var(--text);
+    background:var(--surface); border:1px solid var(--line-strong); border-radius:var(--radius-sm);
+    transition:border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
   }
   .field input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .login button[type=submit] { width:100%; justify-content:center; margin-top:4px; }
@@ -567,30 +520,28 @@ function renderCodePanel(model: string): string {
   </div>`;
 }
 
-/** 凭证池状态 → 展示文案与色调 */
-function credentialDisplay(pool: LandingStatus['credentialPool']): { tone: string; label: string; hint: string } {
-  switch (pool) {
-    case 'good':
-      return { tone: 'ok', label: '正常', hint: '上游凭证可用' };
-    case 'partial':
-      return { tone: 'warn', label: '降级', hint: '部分凭证不可用' };
-    case 'none':
-      return { tone: 'bad', label: '不可用', hint: '暂无可用凭证' };
-    default:
-      return { tone: '', label: '未知', hint: '尚未配置凭证' };
-  }
-}
-
 /**
  * 根路径落地页（无鉴权）。
  *
+ * 只回答两件事：这是什么、怎么接。运行时长与凭证池状态属运维信息，
+ * 已收进控制台，不在公开页呈现。
+ *//**
+ * 根路径落地页（无鉴权）。
+ *
  * 承担两件事：对外证明「服务活着」，以及给开发者一份可直接抄走的接入方式。
- * 因此只呈现运行时长、模型规模、凭证池三档状态这类粗粒度信息。
+ * 主体只有三块：一句话 Banner、页签（接入方式 / 模型目录）、页脚。
+ *
+ * @param status  运行时状态（脱敏）
+ * @param models  当前页签为「模型目录」时的模型列表；为 null 表示不展示该页签
+ * @param region  模型目录的区域
  */
-export function renderLandingPage(status: LandingStatus): string {
-  const pool = credentialDisplay(status.credentialPool);
-  const running = status.uptimeMs > 0;
+export function renderLandingPage(
+  status: LandingStatus,
+  models: PublicModel[] | null = null,
+  region: Region = 'cn',
+): string {
   const checked = formatCheckedAt(new Date());
+  const count = status.modelCount ? status.modelCount.toLocaleString('en-US') : '—';
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -609,58 +560,104 @@ export function renderLandingPage(status: LandingStatus): string {
     <span><b>CodeBuddy Gateway</b></span>
   </a>
   <div class="nav-links">
-    <a class="nav-link" href="/v1/models">模型目录</a>
-    <a class="nav-link" href="/health">健康检查</a>
     <a class="btn btn-primary" href="/admin">管理控制台</a>
   </div>
 </nav>
 
 <main class="wrap">
+  <!-- Banner：一句话说清产品是什么。刻意不放运行时长与凭证健康度 ——
+       那是运维信息，属于控制台，访客不关心。 -->
   <section class="hero">
-    <span class="pill ${running ? 'good' : 'bad'}">
-      <i class="dot"></i>${running ? '服务运行中' : '服务状态未知'}${running ? ` · 已运行 ${escapeHtml(formatUptime(status.uptimeMs))}` : ''}
-    </span>
-    <h1>一套上游凭证<br>接入<em>任意主流客户端</em></h1>
-    <div class="hero-cta">
-      <a class="btn btn-primary" href="/admin">进入管理控制台</a>
-    </div>
+    <h1>一套上游凭证，接入任意主流客户端。</h1>
+    <p>把 CodeBuddy 上游转成 OpenAI、Anthropic、Responses 三种标准协议，客户端零改动即可接入。</p>
   </section>
 
-  <!-- 两个数据点用弹性行，不用栅格：auto-fit 会为 2 项建出 5 条轨道，
-       每项撑到 530px，内部却只有三个短元素，比例失衡 -->
-  <section class="stats">
-    <div class="stat">
-      <span class="stat-label">凭证池</span>
-      <b class="stat-value ${pool.tone}">${escapeHtml(pool.label)}</b>
-      <span class="stat-hint">${escapeHtml(pool.hint)}</span>
-    </div>
-    <span class="stat-divider" aria-hidden="true"></span>
-    <div class="stat">
-      <span class="stat-label">模型目录</span>
-      <b class="stat-value">${status.modelCount ? status.modelCount.toLocaleString('en-US') : '—'}</b>
-    </div>
-  </section>
+  <!-- 页签：接入方式 / 模型目录。用 query 参数切换，纯服务端渲染，不依赖 JS。 -->
+  <div class="tabs" role="tablist">
+    <a class="tab ${models ? '' : 'active'}" role="tab" aria-selected="${models ? 'false' : 'true'}" href="/">接入方式</a>
+    <a class="tab ${models ? 'active' : ''}" role="tab" aria-selected="${models ? 'true' : 'false'}" href="/?tab=models">模型目录 <span class="n">${escapeHtml(count)}</span></a>
+  </div>
 
-  <section class="section" id="protocols">
-    <div class="section-head">
-      <h2>接入方式</h2>
-    </div>
-    <div class="cards">
-      ${PROTOCOLS.map((spec) => renderProtocolCard(spec)).join('\n')}
+  ${models
+    ? `<section class="panel active" id="panel-models" role="tabpanel">${renderModelsPanel(models, region)}</section>`
+    : `<section class="panel active" id="panel-api" role="tabpanel">
+    <div class="endpoints">
+      ${PROTOCOLS.map(
+        (spec) => `<div class="ep-row">
+        <span class="ep-name">${escapeHtml(spec.name)}</span>
+        <span class="ep-path"><b>${escapeHtml(spec.method)}</b> ${escapeHtml(spec.path)}</span>
+        <span class="ep-auth">${escapeHtml(spec.auth)}</span>
+      </div>`,
+      ).join('\n      ')}
     </div>
     ${renderCodePanel(status.sampleModel)}
-  </section>
+  </section>`}
 </main>
 
 <footer class="foot">
   <a href="/admin">管理控制台</a>
-  <a href="/v1/models">模型目录</a>
+  <a href="/?tab=models">模型目录</a>
   <a href="/health">健康检查</a>
   <span style="margin-left:auto">检查时间 ${escapeHtml(checked)}</span>
 </footer>
 <script>${COPY_SCRIPT}</script>
 </body>
 </html>`;
+}
+
+/**
+ * 模型目录面板（并入落地页的「模型目录」页签）。
+ *
+ * 独立成函数是因为它需要实时向上游拉取目录 —— 落地页渲染时不该为一个
+ * 页签阻塞；由调用方按 ?tab=models 决定是否拉取并传入。
+ *
+ * 区域切换同样用 query 参数，保证无 JS 环境也能切换。
+ */
+export function renderModelsPanel(models: PublicModel[], region: Region = 'cn'): string {
+  // 区域切换用链接而非按钮：纯服务端渲染，无 JS 环境也能切换。
+  // 面板在落地页内，故链接带回 ?tab=models，切完区域仍停在模型目录页签。
+  const regionTabs = (['cn', 'intl'] as const)
+    .map(
+      (r) =>
+        `<a class="${r === region ? 'active' : ''}" href="/?tab=models&region=${r}">${REGION_LABEL[r]}</a>`,
+    )
+    .join('');
+
+  // 国际版无内置快照：上游不可用时会是空列表。与其展示空白网格，
+  // 不如说明原因并给出配置入口，否则用户会以为是页面坏了。
+  const emptyHint =
+    models.length === 0
+      ? region === 'intl'
+        ? `<div class="empty-state">
+        <p>国际版目录需实时拉取</p>
+        <p class="sub">国际版没有内置快照，需在管理控制台添加国际版上游凭证后，由网关实时向上游获取。</p>
+      </div>`
+        : '<div class="empty-state"><p>暂无可用模型目录</p></div>'
+      : '';
+
+  const cards = models
+    .map(
+      (m) => `<div class="model">
+      <div class="nm" title="${escapeHtml(m._name || m.id)}">${escapeHtml(m._name || m.id)}</div>
+      <div class="id" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</div>
+      <div class="meta">
+        ${m._credits ? `<span class="cr">${escapeHtml(m._credits.replace(/\s*credits$/i, ''))}</span>` : '<span class="cr">—</span>'}
+        <span class="ctx">${typeof m._maxInputTokens === 'number' ? escapeHtml(formatContext(m._maxInputTokens)) : '—'}</span>
+      </div>
+    </div>`,
+    )
+    .join('\n    ');
+
+  return `<div class="region">${regionTabs}</div>
+    ${emptyHint}
+    ${models.length > 0 ? `<div class="model-grid">${cards}</div>` : ''}`;
+}
+
+/** 上下文长度：把 1000000 显示成 1M，表格里更好扫读 */
+function formatContext(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
 }
 
 // ── 模型目录 ──────────────────────────────────────────────────────────────
@@ -682,27 +679,11 @@ interface PublicModel {
  * 仍按调用方自己的凭证返回对应目录。
  */
 export function renderPublicModelsPage(models: PublicModel[], region: Region = 'cn'): string {
-  const cards = models
-    .map(
-      (m) => `<div class="model">
-  <div class="model-id mono">${escapeHtml(m.id)}</div>
-  <div class="model-name">${escapeHtml(m._name || m.id)}</div>
-  <div class="model-meta">
-    ${m._credits ? `<span class="tag">${escapeHtml(m._credits)}</span>` : ''}
-    ${m._vendor ? `<span class="num">${escapeHtml(m._vendor)}</span>` : ''}
-    ${typeof m._maxInputTokens === 'number' ? `<span class="num">in ${m._maxInputTokens.toLocaleString('en-US')}</span>` : ''}
-    ${typeof m._maxOutputTokens === 'number' ? `<span class="num">out ${m._maxOutputTokens.toLocaleString('en-US')}</span>` : ''}
-  </div>
-</div>`,
-    )
-    .join('\n');
-
-  // 区域标签：用 query 参数切换，纯服务端渲染，不依赖 JS。
-  // 标签一律带链接而非纯样式按钮，保证无 JS 环境下也能切换。
+  // 区域切换用链接而非按钮：纯服务端渲染，无 JS 环境也能切换。
   const regionTabs = (['cn', 'intl'] as const)
     .map(
       (r) =>
-        `<a class="region-tab${r === region ? ' active' : ''}" href="/v1/models?region=${r}">${REGION_LABEL[r]}</a>`,
+        `<a class="${r === region ? 'active' : ''}" href="/v1/models?region=${r}">${REGION_LABEL[r]}</a>`,
     )
     .join('');
 
@@ -712,11 +693,24 @@ export function renderPublicModelsPage(models: PublicModel[], region: Region = '
     models.length === 0
       ? region === 'intl'
         ? `<div class="empty-state">
-  <p>暂无可用模型目录</p>
-  <p class="sub">国际版目录需实时向上游拉取。请在管理台「上游凭证」中添加国际版凭证后重试。</p>
+  <p>国际版目录需实时拉取</p>
+  <p class="sub">国际版没有内置快照，需在管理控制台添加国际版上游凭证后，由网关实时向上游获取。</p>
 </div>`
-        : `<div class="empty-state"><p>暂无可用模型目录</p></div>`
+        : '<div class="empty-state"><p>暂无可用模型目录</p></div>'
       : '';
+
+  const cards = models
+    .map(
+      (m) => `<div class="model">
+  <div class="nm" title="${escapeHtml(m._name || m.id)}">${escapeHtml(m._name || m.id)}</div>
+  <div class="id" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</div>
+  <div class="meta">
+    ${m._credits ? `<span class="cr">${escapeHtml(m._credits.replace(/\s*credits$/i, ''))}</span>` : '<span class="cr">—</span>'}
+    <span class="ctx">${typeof m._maxInputTokens === 'number' ? escapeHtml(formatContext(m._maxInputTokens)) : '—'}</span>
+  </div>
+</div>`,
+    )
+    .join('\n');
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -730,11 +724,11 @@ export function renderPublicModelsPage(models: PublicModel[], region: Region = '
 <body>
 ${navBar()}
 <main class="wrap">
-  <header class="page-head">
+  <section class="hero" style="padding-bottom:28px">
     <h1>模型目录</h1>
     <p>${REGION_LABEL[region]} · 共 ${models.length.toLocaleString('en-US')} 个模型</p>
-  </header>
-  <div class="region-tabs">${regionTabs}</div>
+  </section>
+  <div class="region">${regionTabs}</div>
   ${emptyHint}
   ${models.length > 0 ? `<div class="model-grid">${cards}</div>` : ''}
 </main>
@@ -762,17 +756,14 @@ export function renderHealthPage(): string {
 <body>
 ${navBar()}
 <main class="wrap">
-  <header class="page-head">
+  <section class="hero" style="padding-bottom:28px">
     <h1>运行状态</h1>
     <p>监控脚本请调用 <code class="mono">GET /health</code></p>
-  </header>
-  <div class="health">
-    <span class="health-dot"></span>
-    <div>
-      <b>网关运行正常</b>
-      <span>检查时间 ${escapeHtml(checked)}</span>
-    </div>
-  </div>
+  </section>
+  <ul class="kv">
+    <li><span>状态</span><b class="ok">网关运行正常</b></li>
+    <li><span>检查时间</span><b>${escapeHtml(checked)}</b></li>
+  </ul>
 </main>
 ${footer('健康检查')}
 </body>

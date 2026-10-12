@@ -14,6 +14,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import {
+  NDropdown,
   NButton,
   NCheckbox,
   NForm,
@@ -26,6 +27,7 @@ import {
   NTooltip,
   useDialog,
   useMessage,
+  type MenuOption,
 } from 'naive-ui';
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
@@ -220,6 +222,27 @@ function doResetUsage(row: KeySummary): void {
         await refreshKeys();
       }),
   });
+}
+
+/**
+ * 低频操作的更多菜单。
+ *
+ * 极简口径下每行只保留两个高频动作（编辑 / 别名），
+ * 重置用量、启用停用、删除收进菜单 —— 它们要么危险、要么很少用。
+ */
+function keyMenu(row: KeySummary): MenuOption[] {
+  return [
+    { label: '重置用量', key: 'reset' },
+    { label: row.enabled ? '停用' : '启用', key: 'toggle' },
+    { type: 'divider', key: 'd1' },
+    { label: '删除', key: 'delete' },
+  ];
+}
+
+function onKeyMenu(row: KeySummary, key: string): void {
+  if (key === 'reset') doResetUsage(row);
+  else if (key === 'toggle') void doToggle(row);
+  else if (key === 'delete') doDelete(row);
 }
 
 /** 打开编辑弹窗，把现有配置铺进表单 */
@@ -441,53 +464,50 @@ onMounted(() => {
       </NButton>
     </PageHeader>
 
-    <!-- 概览：四个数字回答「整体用得怎么样」 -->
-    <section v-if="!firstLoad && store.keys.length > 0" class="summary" aria-label="Key 概览">
-      <div class="summary-item">
-        <span class="summary-label">Key 总数</span>
-        <b class="summary-value tnum">{{ overview.total }}</b>
-        <span class="summary-hint">{{ overview.enabled }} 个启用中</span>
+    <!-- 概览读数带：4 个数字回答「整体用得怎么样」，用发丝竖线分隔 -->
+    <section v-if="!firstLoad && store.keys.length > 0" class="stats" aria-label="Key 概览">
+      <div class="stat">
+        <div class="stat-k label">Key 总数</div>
+        <div class="stat-v">{{ overview.total }}</div>
+        <div class="stat-d">{{ overview.enabled }} 个启用中</div>
       </div>
-      <div class="summary-item">
-        <span class="summary-label">今日请求</span>
-        <b class="summary-value tnum">{{ num(overview.todayRequests) }}</b>
-        <span class="summary-hint">全部 Key 合计</span>
+      <div class="stat">
+        <div class="stat-k label">今日请求</div>
+        <div class="stat-v">{{ num(overview.todayRequests) }}</div>
+        <div class="stat-d">全部 Key 合计</div>
       </div>
-      <div class="summary-item">
-        <span class="summary-label">今日 Token</span>
-        <b class="summary-value tnum">{{ fmtTokens(overview.todayTokens) }}</b>
-        <span class="summary-hint">上游上报口径</span>
+      <div class="stat">
+        <div class="stat-k label">今日 Token</div>
+        <div class="stat-v">{{ fmtTokens(overview.todayTokens) }}</div>
+        <div class="stat-d">上游上报口径</div>
       </div>
-      <div class="summary-item">
-        <span class="summary-label">已设配额</span>
-        <b class="summary-value tnum">{{ overview.limited }}</b>
-        <span class="summary-hint">其余不限量</span>
+      <div class="stat">
+        <div class="stat-k label">已设配额</div>
+        <div class="stat-v">{{ overview.limited }}</div>
+        <div class="stat-d">其余不限量</div>
       </div>
     </section>
 
     <section class="panel">
       <div class="panel-head">
-        <div class="panel-title">
-          <AppIcon name="keys" :size="15" />
-          客户端 Key
-          <span class="sub">共 {{ filtered.length }} 个</span>
-        </div>
+        <div class="panel-title">客户端 Key</div>
         <div class="panel-head-extra">
+          <span class="sub">共 {{ filtered.length }} 个</span>
           <NInput
             v-model:value="keyword"
-            placeholder="搜索 Key 名称或 ID"
+            placeholder="搜索名称或 ID"
             clearable
             size="small"
-            style="width: 240px"
+            style="width: 220px"
           >
             <template #prefix><AppIcon name="search" :size="14" /></template>
           </NInput>
         </div>
       </div>
 
-      <TableSkeleton v-if="firstLoad" class="panel-body" :widths="[1, 1, 1]" :rows="4" />
+      <TableSkeleton v-if="firstLoad" :widths="[1.2, 1.6, 0.8, 0.8]" :rows="4" />
 
-      <div v-else-if="filtered.length === 0" class="panel-body">
+      <div v-else-if="filtered.length === 0">
         <EmptyState
           icon="keys"
           title="还没有客户端 Key"
@@ -497,113 +517,79 @@ onMounted(() => {
         </EmptyState>
       </div>
 
-      <div v-else class="cards">
-        <article v-for="key in filtered" :key="key.id" class="card" :class="{ off: !key.enabled }">
-          <!-- 头部：名称 + 状态 -->
-          <header class="card-head">
-            <div class="card-title">
-              <span class="name">{{ key.name }}</span>
-              <NTag :type="key.enabled ? 'success' : 'default'" size="small" :bordered="false">
-                {{ key.enabled ? '启用' : '停用' }}
-              </NTag>
+      <!-- 极简口径：每个 Key 不再是一张「白卡 + 阴影 + 内部分区」，
+           而是一行「标识 → 用量占比 → 配额 → 元信息」，操作悬停浮现。
+           Key 之间靠发丝线分隔，一屏能看到更多、对比也更容易。 -->
+      <div v-else class="rows">
+        <article v-for="key in filtered" :key="key.id" class="key-row" :class="{ off: !key.enabled }">
+          <div class="ident">
+            <div class="name">
+              {{ key.name }}
+              <span v-if="!key.enabled" class="sub">（已停用）</span>
             </div>
-            <span class="sub mono id">{{ key.id }}</span>
-          </header>
-
-          <!-- 绑定概览 -->
-          <div class="section">
-            <div class="row">
-              <span class="k">上游凭证</span>
-              <span class="v" :title="boundNames(key)">
-                {{ boundNames(key) }}
-                <NTag v-if="boundWarnings(key) > 0" type="warning" size="tiny" :bordered="false">
-                  {{ boundWarnings(key) }} 个异常
-                </NTag>
-              </span>
-            </div>
-            <div class="row">
-              <span class="k">可用模型</span>
-              <span class="v" :title="(key.modelIds ?? []).join('、')">
-                <NTag :type="(key.modelIds ?? []).length === 0 ? 'info' : 'default'" size="tiny" :bordered="false">
-                  {{ modelBindingLabel(key) }}
-                </NTag>
-                <span v-if="(key.modelIds ?? []).length > 0" class="sub">
-                  {{ (key.modelIds ?? []).slice(0, 3).join('、') }}<template v-if="(key.modelIds ?? []).length > 3"> …</template>
-                </span>
-              </span>
-            </div>
-            <div class="row">
-              <span class="k">模型别名</span>
-              <span class="v sub">
-                {{ Object.keys(key.modelAliases ?? {}).length || '无' }}
-                <template v-if="Object.keys(key.modelAliases ?? {}).length"> 条</template>
-              </span>
+            <div class="cell-sub">
+              <span class="kind">{{ boundNames(key) }}</span>
+              <template v-if="boundWarnings(key) > 0">
+                <span class="warn"> · {{ boundWarnings(key) }} 个异常</span>
+              </template>
+              <template v-if="Object.keys(key.modelAliases ?? {}).length">
+                · {{ Object.keys(key.modelAliases ?? {}).length }} 条别名
+              </template>
             </div>
           </div>
 
-          <!-- 用量统计：日 / 月 两个窗口 -->
-          <div class="section">
-            <div class="section-title">用量</div>
-            <div class="stats">
-              <div class="stat">
-                <span class="stat-label">今日</span>
-                <span class="stat-line">
-                  <b class="tnum">{{ num(key.usage?.daily?.requests ?? 0) }}</b> 次 ·
-                  <b class="tnum">{{ fmtTokens(key.usage?.daily?.tokens ?? 0) }}</b> tokens
-                </span>
-              </div>
-              <div class="stat">
-                <span class="stat-label">本月</span>
-                <span class="stat-line">
-                  <b class="tnum">{{ num(key.usage?.monthly?.requests ?? 0) }}</b> 次 ·
-                  <b class="tnum">{{ fmtTokens(key.usage?.monthly?.tokens ?? 0) }}</b> tokens
-                </span>
-              </div>
+          <!-- 用量：今日 / 本月，等宽数字对齐 -->
+          <div class="usage">
+            <div class="usage-line">
+              <span class="label">今日</span>
+              <span class="tnum">{{ num(key.usage?.daily?.requests ?? 0) }} 次</span>
+              <span class="tnum sub">{{ fmtTokens(key.usage?.daily?.tokens ?? 0) }} tok</span>
+            </div>
+            <div class="usage-line">
+              <span class="label">本月</span>
+              <span class="tnum">{{ num(key.usage?.monthly?.requests ?? 0) }} 次</span>
+              <span class="tnum sub">{{ fmtTokens(key.usage?.monthly?.tokens ?? 0) }} tok</span>
             </div>
           </div>
 
-          <!-- 配额进度：只显示已设置的维度 -->
-          <div v-if="quotaBars(key).length > 0" class="section">
-            <div class="section-title">配额</div>
-            <ul class="quotas">
-              <li v-for="bar in quotaBars(key)" :key="bar.label">
-                <div class="quota-head">
-                  <span class="quota-label">{{ bar.label }}</span>
-                  <span class="quota-num tnum">{{ num(bar.used) }} / {{ num(bar.limit) }}</span>
+          <!-- 配额：只显示已设置的维度；用 2px 细线表达占比 -->
+          <div class="quota">
+            <template v-if="quotaBars(key).length > 0">
+              <div v-for="bar in quotaBars(key)" :key="bar.label" class="quota-item">
+                <div class="quota-top">
+                  <span class="label">{{ bar.label }}</span>
+                  <span class="tnum sub">{{ num(bar.used) }} / {{ num(bar.limit) }}</span>
                 </div>
                 <div class="track">
                   <div class="fill" :class="bar.tone" :style="{ width: bar.percent + '%' }" />
                 </div>
-              </li>
-            </ul>
-          </div>
-          <div v-else class="section">
-            <span class="sub">未设置配额（不限量）</span>
+              </div>
+            </template>
+            <span v-else class="sub">未设配额</span>
           </div>
 
-          <!-- 页脚：元信息 + 操作 -->
-          <footer class="card-foot">
-            <div class="meta sub">
-              <NTooltip>
-                <template #trigger>
-                  <span>{{ key.lastUsedAt ? `最近使用 ${relTime(key.lastUsedAt)}` : '尚未使用' }}</span>
-                </template>
-                <div>创建于 {{ fmtTime(key.createdAt) }}</div>
-                <div v-if="key.lastUsedAt">最近使用 {{ fmtTime(key.lastUsedAt) }}</div>
-              </NTooltip>
-            </div>
-            <div class="actions">
-              <NButton size="tiny" quaternary :loading="busyId === key.id" @click="openEdit(key)">
-                编辑
-              </NButton>
-              <NButton size="tiny" quaternary @click="openAlias(key)">别名</NButton>
-              <NButton size="tiny" quaternary @click="doResetUsage(key)">重置用量</NButton>
-              <NButton size="tiny" quaternary @click="doToggle(key)">
-                {{ key.enabled ? '停用' : '启用' }}
-              </NButton>
-              <NButton size="tiny" quaternary type="error" @click="doDelete(key)">删除</NButton>
-            </div>
-          </footer>
+          <div class="meta">
+            <NTooltip>
+              <template #trigger>
+                <span class="sub">{{ key.lastUsedAt ? relTime(key.lastUsedAt) : '尚未使用' }}</span>
+              </template>
+              <div>创建于 {{ fmtTime(key.createdAt) }}</div>
+              <div v-if="key.lastUsedAt">最近使用 {{ fmtTime(key.lastUsedAt) }}</div>
+            </NTooltip>
+          </div>
+
+          <!-- 操作：默认隐形，悬停浮现 —— 避免每行挂五个按钮把列表读散 -->
+          <div class="row-acts">
+            <NButton size="tiny" quaternary :loading="busyId === key.id" @click="openEdit(key)">编辑</NButton>
+            <NButton size="tiny" quaternary @click="openAlias(key)">别名</NButton>
+            <NDropdown
+              :options="keyMenu(key)"
+              @select="(k: string) => onKeyMenu(key, k)"
+              trigger="click"
+            >
+              <NButton size="tiny" quaternary>更多</NButton>
+            </NDropdown>
+          </div>
         </article>
       </div>
     </section>
@@ -842,7 +828,16 @@ onMounted(() => {
       @update:show="(value: boolean) => !value && (secret = null)"
     >
       <div class="warn">请立即保存。出于安全，明文仅显示这一次。</div>
-      <div class="secret mono">{{ secret?.plaintext }}</div>
+      <!-- 用只读输入框而非普通文本：点一下即全选，两种复制都失败时用户还能手动 Ctrl+C。
+           普通 div 需要用户自己拖选，长 Key 很容易漏掉首尾字符。 -->
+      <input
+        class="secret mono"
+        readonly
+        :value="secret?.plaintext ?? ''"
+        aria-label="API Key 明文"
+        @focus="(e: FocusEvent) => (e.target as HTMLInputElement).select()"
+        @click="(e: MouseEvent) => (e.target as HTMLInputElement).select()"
+      />
       <div class="secret-actions">
         <NButton size="small" secondary @click="copy(secret?.plaintext ?? '', '已复制 Key')">
           <template #icon><AppIcon name="copy" :size="14" /></template>
@@ -862,209 +857,98 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* ── 概览条 ── */
-.summary {
+/* ── Key 行 ──
+   每个 Key 一行：标识 → 用量 → 配额 → 元信息 → 操作。
+   靠发丝线分隔，不用卡片 —— 一屏能看到更多，对比也更容易。 */
+.rows {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+
+.key-row {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-}
-
-.summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 16px;
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
-}
-
-.summary-label {
-  font-size: 12px;
-  color: var(--text-3);
-}
-
-.summary-value {
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-}
-
-.summary-hint {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-/* ── 卡片网格 ── */
-.cards {
-  display: grid;
-  gap: 14px;
-  padding: 14px 16px 16px;
-  /* 卡片承载信息较多，最小宽度给足，避免在中等宽度下被压扁 */
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-}
-
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 18px;
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
-  transition: border-color 180ms var(--ease), box-shadow 180ms var(--ease);
-}
-
-.card:hover {
-  border-color: var(--border);
-  box-shadow: var(--shadow-raised);
-}
-
-/* 停用的 Key 整体降饱和，一眼区分 */
-.card.off {
-  background: var(--surface-2);
-  opacity: 0.72;
-}
-
-.card-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.card-title {
-  display: flex;
+  grid-template-columns: minmax(180px, 1.4fr) 180px minmax(160px, 1fr) 96px auto;
   align-items: center;
-  gap: 8px;
+  gap: 24px;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--line);
+  transition: background 140ms var(--ease);
+}
+
+.key-row:last-child {
+  border-bottom: none;
+}
+
+.key-row:hover {
+  background: rgba(0, 0, 0, 0.014);
+}
+
+.key-row.off {
+  opacity: 0.55;
+}
+
+.ident {
   min-width: 0;
 }
 
 .name {
-  font-size: 15px;
-  font-weight: 650;
+  font-weight: 550;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.id {
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.section {
+.usage {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
+  gap: 5px;
 }
 
-.section-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-
-.row {
+.usage-line {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
-.row .k {
+.usage-line .label {
+  width: 26px;
   flex: none;
-  width: 64px;
-  color: var(--text-3);
 }
 
-.row .v {
-  flex: 1;
+.quota {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-/* ── 用量 ── */
-.stats {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.stat {
+.quota-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 5px;
 }
 
-.stat-label {
-  font-size: 11px;
-  color: var(--text-3);
-}
-
-.stat-line {
-  font-size: 12.5px;
-  color: var(--text-2);
-}
-
-.stat-line b {
-  color: var(--text);
-  font-weight: 600;
-}
-
-/* ── 配额进度 ── */
-.quotas {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.quota-top {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.quota-head {
-  display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 11.5px;
-  margin-bottom: 4px;
+  gap: 10px;
 }
 
-.quota-label {
-  color: var(--text-3);
-}
-
-.quota-num {
-  color: var(--text-2);
-}
-
+/* 2px 细线：配额只需表达比例，不需要视觉重量 */
 .track {
-  height: 5px;
-  border-radius: 999px;
-  background: var(--surface-3);
+  height: 2px;
+  background: var(--line);
   overflow: hidden;
 }
 
 .fill {
   height: 100%;
-  border-radius: 999px;
-  transition: width 320ms var(--ease);
-}
-
-.fill.ok {
-  background: var(--accent);
+  background: var(--text);
+  transition: width 480ms var(--ease);
 }
 
 .fill.warn {
@@ -1072,114 +956,86 @@ onMounted(() => {
 }
 
 .fill.bad {
-  background: var(--danger);
-}
-
-/* ── 页脚 ── */
-.card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
+  background: var(--bad);
 }
 
 .meta {
   font-size: 11.5px;
-  cursor: default;
+  color: var(--text-3);
+  white-space: nowrap;
 }
 
-.actions {
+@media (max-width: 1100px) {
+  .key-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 14px 24px;
+    align-items: start;
+  }
+
+  .meta {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .key-row {
+    grid-template-columns: 1fr;
+  }
+
+  .row-acts {
+    justify-content: flex-start;
+  }
+}
+
+/* ── 弹窗内的键值 / 表单块 ── */
+.kv {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.kv li {
   display: flex;
-  gap: 2px;
-  flex-wrap: wrap;
-}
-
-/* ── 表单 ── */
-.form-row {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: 1fr auto;
-  align-items: start;
-}
-
-.cred-list,
-.model-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 180px;
-  overflow: auto;
-  width: 100%;
-}
-
-.model-list {
-  max-height: 200px;
-}
-
-/* 模型目录区域切换条 */
-.model-region-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 4px;
-}
-
-.quota-form {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.quota-form-head,
-.quota-form-row {
-  display: grid;
-  grid-template-columns: 72px 1fr 1fr;
-  gap: 10px;
-  align-items: center;
-}
-
-.quota-form-row .k {
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
   font-size: 12.5px;
-  color: var(--text-2);
 }
 
-/* ── 别名编辑 ── */
-.alias-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.kv li:last-child {
+  border-bottom: none;
 }
 
-.alias-row {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr auto;
-  gap: 8px;
-  align-items: center;
+.kv span {
+  color: var(--text-3);
 }
 
-/* ── 明文弹窗 ── */
-.warn {
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  background: var(--warn-soft);
-  color: var(--warn);
-  border-radius: var(--radius-sm);
-  font-size: 12.5px;
+.kv b {
   font-weight: 550;
+  text-align: right;
+  word-break: break-all;
 }
 
+/* 密钥明文：只读输入框，点一下全选 —— 复制失败时仍可手动 Ctrl+C */
 .secret {
+  display: block;
+  width: 100%;
   padding: 12px;
-  background: var(--inset);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
+  font-family: var(--mono);
   font-size: 12.5px;
   word-break: break-all;
+  color: var(--text);
+  cursor: text;
+}
+
+.secret:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .secret-actions {
@@ -1189,19 +1045,30 @@ onMounted(() => {
   margin-top: 12px;
 }
 
+.warn {
+  border-left: 2px solid var(--warn);
+  padding: 2px 0 2px 14px;
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+
+/* 模型别名表格 */
+.alias-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.alias-arrow {
+  flex: none;
+  color: var(--text-3);
+}
+
 @media (max-width: 640px) {
   .cards {
     grid-template-columns: 1fr;
-  }
-
-  .stats {
-    grid-template-columns: 1fr;
-  }
-
-  .quota-form-head,
-  .quota-form-row {
-    grid-template-columns: 60px 1fr 1fr;
-    gap: 6px;
   }
 }
 </style>

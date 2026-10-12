@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>日志 · CodeBuddy Gateway</title>
+<!--
+  日志（极简版）
+  ─────────────────────────────────────────────────────────────
+  这一页只回答一个问题：**刚才到底发生了什么？**
+
+  相对原控制台删掉的：
+    · 表格化的四列布局（时间/级别/事件/详情）—— 改成日志流：
+      时间与级别靠左固定宽度，说明独占一行并允许折行。
+      日志本质是「读句子」，不是「比字段」。
+    · 分页 —— 改成「加载更多」，日志是按时间顺序读的
+
+  保留：级别筛选（带计数）、关键词搜索、暂停/恢复（后台继续累积）、
+        导出 JSON、结构化字段展开、清空显示。
+-->
+<link rel="stylesheet" href="shell.css" />
+<style>
+  .logstream { display: flex; flex-direction: column; }
+  .logline {
+    display: flex; gap: 14px; align-items: baseline;
+    padding: 9px 0; border-bottom: 1px solid var(--line);
+    font-size: 12.5px; line-height: 1.65;
+  }
+  .logline:last-child { border-bottom: none; }
+  .logline .t { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); flex: none; width: 62px; }
+  .logline .lv {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 640; letter-spacing: .05em;
+    flex: none; width: 44px;
+  }
+  .logline .lv.info { color: var(--text-3); }
+  .logline .lv.warn { color: var(--warn); }
+  .logline .lv.error { color: var(--bad); }
+  .logline .body { flex: 1; min-width: 0; }
+  .logline .msg { color: var(--text); }
+  .logline .fields {
+    margin-top: 5px; font-family: var(--mono); font-size: 11px; color: var(--text-3);
+    word-break: break-all;
+  }
+  .logline .fields b { font-weight: 500; color: var(--text-2); }
+
+  /* 暂停态：整片降低对比度，明示「画面已冻结」 */
+  .paused-veil .logline { opacity: .5; }
+</style>
+</head>
+<body>
+<div id="topbar"></div>
+
+<main class="page">
+  <div class="page-head">
+    <div>
+      <h1>日志</h1>
+      <p>上游失败、凭证切换、定时签到等事件（进程内最近 300 条，重启即清零）。</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn" id="btn-pause">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+        暂停
+      </button>
+      <button class="btn" id="btn-export">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+        导出
+      </button>
+    </div>
+  </div>
+
+  <!-- 筛选行：级别 + 搜索 -->
+  <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:18px">
+    <div class="seg" id="levels" style="border-bottom:none">
+      <button class="on" data-l="info">INFO <span class="n" id="n-info">0</span></button>
+      <button class="on" data-l="warn">WARN <span class="n" id="n-warn">0</span></button>
+      <button class="on" data-l="error">ERROR <span class="n" id="n-error">0</span></button>
+    </div>
+    <div class="search" style="width:300px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input class="input" id="q" placeholder="搜索事件、说明或字段值" />
+    </div>
+    <span class="sub" id="count"></span>
+    <button class="btn-text" id="btn-clear" style="margin-left:auto">清空显示</button>
+  </div>
+
+  <div id="paused-note" class="note warn" style="display:none;margin-bottom:16px">已暂停显示（事件仍在后台累积，点「恢复」查看最新）。</div>
+
+  <div id="stream" class="logstream"></div>
+  <div id="empty" class="empty" style="display:none">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+    <b>暂无日志</b>
+    <span>上游失败、凭证切换或定时签到发生后，事件显示在这里。</span>
+  </div>
+
+  <div style="display:flex;justify-content:center;margin-top:24px">
+    <button class="btn btn-sm" id="btn-more" style="display:none">加载更多</button>
+  </div>
+</main>
+
+<script src="shared.js"></script>
+<script>
+mountTopbar('logs');
+
+/* ═══════════ 生成确定性日志 ═══════════ */
+const TEMPLATES = [
+  ['info',  'credential.refresh',    '凭证 access token 已刷新',            (r) => ({ credential: r.pick(['cli-main','cli-backup','cli-dev']), expiresIn: `${r.int(2,6)}h` })],
+  ['info',  'checkin.success',       '每日签到成功',                        () => ({ credit: 100, season: 8 })],
+  ['info',  'request.completed',     '请求完成',                            (r) => ({ model: r.pick(['DeepSeek-V4-Pro','GLM-5.3','Kimi-K3']), tokens: r.int(800,16000), durationMs: r.int(400,4200) })],
+  ['warn',  'credential.cooling',    '凭证触发限流，进入冷却窗口',           (r) => ({ credential: r.pick(['cli-dev','cli-main']), cooldownSec: 180 })],
+  ['warn',  'upstream.retry',        '上游返回 429，已切换凭证重试',         (r) => ({ from: 'cli-dev', to: 'cli-main', attempt: 2 })],
+  ['error', 'upstream.error',        '上游返回 500',                        (r) => ({ model: r.pick(['GLM-5.3','Kimi-K3']), status: 500, requestId: r.hex(16) })],
+  ['error', 'upstream.timeout',      '连接上游超时',                        (r) => ({ timeoutSec: 30, url: 'copilot.tencent.com' })],
+  ['info',  'credential.loaded',     '凭证池已加载',                        (r) => ({ total: 6, healthy: r.int(4,6) })],
+  ['warn',  'quota.low',             '凭证剩余额度偏低',                     (r) => ({ credential: 'cli-dev', remaining: r.int(200,900) })],
+];
+
+function buildLogs(n) {
+  let seed = 987654321;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const r = {
+    pick: (a) => a[Math.floor(rnd() * a.length)],
+    int: (a, b) => a + Math.floor(rnd() * (b - a + 1)),
+    hex: (n) => Array.from({ length: n }, () => '0123456789abcdef'[Math.floor(rnd() * 16)]).join(''),
+  };
+  const out = [];
+  const now = Date.now();
+  for (let i = 0; i < n; i++) {
+    const [level, event, message, mk] = TEMPLATES[Math.floor(rnd() * TEMPLATES.length)];
+    out.push({ at: now - i * r.int(3000, 90000), level, event, message, data: mk(r) });
+  }
+  return out.sort((a, b) => b.at - a.at);
+}
+
+const ALL = buildLogs(120);
+
+/* ═══════════ 状态 ═══════════ */
+let levels = new Set(['info', 'warn', 'error']);
+let query = '';
+let paused = false;
+let shown = 40;
+let hidden = [];   // 暂停期间累积的新事件
+
+function filtered() {
+  return ALL.filter((l) => {
+    if (!levels.has(l.level)) return false;
+    if (query) {
+      const q = query.toLowerCase();
+      const hay = (l.event + l.message + JSON.stringify(l.data || {})).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+/* ═══════════ 渲染 ═══════════ */
+function render() {
+  const rows = filtered();
+  const slice = rows.slice(0, shown);
+  const el = document.getElementById('stream');
+
+  document.getElementById('count').textContent = `共 ${rows.length} 条`;
+
+  // 级别计数按全量统计（不受级别筛选影响，否则取消勾选后数字会变）
+  const byLevel = { info: 0, warn: 0, error: 0 };
+  ALL.forEach((l) => byLevel[l.level]++);
+  document.getElementById('n-info').textContent = byLevel.info;
+  document.getElementById('n-warn').textContent = byLevel.warn;
+  document.getElementById('n-error').textContent = byLevel.error;
+
+  if (!slice.length) {
+    el.innerHTML = '';
+    document.getElementById('empty').style.display = 'flex';
+  } else {
+    document.getElementById('empty').style.display = 'none';
+    el.innerHTML = slice.map((l) => {
+      const fields = l.data
+        ? Object.entries(l.data).map(([k, v]) => `<b>${k}</b>=${v}`).join('  ')
+        : '';
+      return `<div class="logline">
+        <span class="t">${fmt.time(l.at)}</span>
+        <span class="lv ${l.level}">${l.level.toUpperCase()}</span>
+        <div class="body">
+          <div class="msg">${l.message} <span class="sub">${l.event}</span></div>
+          ${fields ? `<div class="fields">${fields}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  document.getElementById('btn-more').style.display = rows.length > shown ? 'inline-flex' : 'none';
+  document.getElementById('paused-note').style.display = paused ? 'block' : 'none';
+  el.classList.toggle('paused-veil', paused);
+}
+
+/* ═══════════ 交互 ═══════════ */
+document.getElementById('levels').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-l]');
+  if (!b) return;
+  const lv = b.dataset.l;
+  // 至少保留一个级别，否则列表会空掉且用户不知道为什么
+  if (levels.has(lv) && levels.size === 1) return;
+  if (levels.has(lv)) levels.delete(lv); else levels.add(lv);
+  b.classList.toggle('on', levels.has(lv));
+  render();
+});
+
+document.getElementById('q').addEventListener('input', (e) => {
+  query = e.target.value.trim();
+  shown = 40;
+  render();
+});
+
+document.getElementById('btn-more').addEventListener('click', () => {
+  shown += 40;
+  render();
+});
+
+document.getElementById('btn-pause').addEventListener('click', function () {
+  paused = !paused;
+  this.innerHTML = paused
+    ? icon('play', 14) + '恢复'
+    : icon('pause', 14) + '暂停';
+  if (!paused && hidden.length) {
+    // 恢复时把暂停期间累积的事件并入
+    ALL.unshift(...hidden);
+    hidden = [];
+    render();
+  } else {
+    render();
+  }
+});
+
+document.getElementById('btn-export').addEventListener('click', () => {
+  const rows = filtered();
+  if (!rows.length) { toast('没有可导出的日志'); return; }
+  const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `gateway-logs-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`已导出 ${rows.length} 条`);
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  ALL.length = 0;
+  hidden = [];
+  render();
+});
+
+/* 模拟新事件到达：暂停时不写入视图，但后台累积 */
+setInterval(() => {
+  const fresh = buildLogs(1)[0];
+  fresh.at = Date.now();
+  if (paused) hidden.push(fresh);
+  else { ALL.unshift(fresh); if (ALL.length > 300) ALL.pop(); render(); }
+}, 6000);
+
+render();
+</script>
+</body>
+</html>

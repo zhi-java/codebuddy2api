@@ -260,7 +260,7 @@ const hoveredRows = computed(() => {
 
 .seg {
   width: 100%;
-  border-radius: 2px 2px 0 0;
+  border-radius: 0;
   transition: height 320ms var(--ease);
 }
 
@@ -275,7 +275,7 @@ const hoveredRows = computed(() => {
 }
 
 .seg.plain {
-  background: linear-gradient(180deg, var(--chart-token), rgba(56, 189, 248, 0.3));
+  background: var(--chart-token);
 }
 
 .tooltip {
@@ -284,16 +284,15 @@ const hoveredRows = computed(() => {
   z-index: 2;
   min-width: 148px;
   padding: 8px 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  background: var(--text);
+  color: #fff;
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow);
-  font-size: 12px;
+  font-size: 11.5px;
   pointer-events: none;
 }
 
 .tip-title {
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.6);
   margin-bottom: 4px;
 }
 
@@ -305,7 +304,7 @@ const hoveredRows = computed(() => {
 }
 
 .tip-row span {
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .tip-row b {

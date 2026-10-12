@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>总览 · CodeBuddy Gateway</title>
+<!--
+  总览（极简版）
+  ─────────────────────────────────────────────────────────────
+  这一页只回答一个问题：**现在服务好不好？**
+
+  为此做了三处删减（相对原控制台）：
+    · 删掉健康横幅 —— 状态收进顶栏一个圆点，不占版面
+    · 删掉延迟直方图、按接口分布、最近请求表 —— 它们属于「排查」，
+      归到日志页；总览只留「趋势」与「哪里出错」
+    · 读数从 7 个降到 4 个，且不做卡片，用发丝竖线分隔
+
+  保留：4 个读数（带迷你趋势）、流量时序、近期错误、模型用量。
+-->
+<link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+<div id="topbar"></div>
+
+<main class="page">
+  <div class="page-head">
+    <div>
+      <h1>总览</h1>
+      <p>实时口径为进程内最近 60 分钟；归档持久化，重启后可回溯。</p>
+    </div>
+    <div class="page-actions">
+      <div class="seg" id="range" style="border-bottom:none">
+        <button class="on" data-r="1h">1h</button>
+        <button data-r="6h">6h</button>
+        <button data-r="24h">24h</button>
+        <button data-r="7d">7d</button>
+      </div>
+      <button class="btn btn-icon" id="refresh" title="刷新">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- 读数带：4 个，用发丝竖线分隔，不做卡片 -->
+  <section class="section">
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-k label">请求速率</div>
+        <div class="stat-v"><span id="v-rate">42</span><small>/min</small></div>
+        <div class="stat-d" id="d-rate">最近 60 分钟 2,418 次</div>
+        <svg class="spark" id="s-rate" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="stat">
+        <div class="stat-k label">成功率</div>
+        <div class="stat-v"><span id="v-ok">99.2</span><small>%</small></div>
+        <div class="stat-d" id="d-ok">失败 19 次</div>
+        <svg class="spark" id="s-ok" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="stat">
+        <div class="stat-k label">P95 耗时</div>
+        <div class="stat-v"><span id="v-p95">2.41</span><small>s</small></div>
+        <div class="stat-d">P50 0.86s · P99 6.20s</div>
+        <svg class="spark" id="s-p95" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="stat">
+        <div class="stat-k label">Token 速率</div>
+        <div class="stat-v"><span id="v-tok">18.6</span><small>K/min</small></div>
+        <div class="stat-d" id="d-tok">2,371/2,418 次上报用量</div>
+        <svg class="spark" id="s-tok" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 流量时序：只有一条主线 + 错误红竖线，不叠第二条折线 -->
+  <section class="section">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">请求流量</div>
+        <div class="panel-extra">
+          <span class="sub" id="flow-note">逐分钟 · 最近 1 小时</span>
+          <span class="sub" style="display:inline-flex;align-items:center;gap:6px">
+            <i style="width:8px;height:2px;background:var(--bad);display:inline-block"></i>错误
+          </span>
+        </div>
+      </div>
+      <div class="chart-wrap" id="flow-wrap">
+        <svg class="chart" id="flow" style="height:200px" preserveAspectRatio="none"></svg>
+        <div class="crosshair" id="crosshair"></div>
+        <div class="tip" id="tip"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 两个清单并排：哪里出错 / 用了多少。
+       窄屏必须折成单栏 —— 否则 375px 下两栏各被压到约 150px，内容溢出。 -->
+  <section class="section">
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">近期错误</div>
+          <a class="btn-text" href="logs.html">全部日志</a>
+        </div>
+        <div class="list" id="errors"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">模型用量</div>
+          <span class="sub">按请求数</span>
+        </div>
+        <div id="models"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="shared.js"></script>
+<script>
+mountTopbar('overview');
+
+/* ── 时间范围 → 数据点配置 ── */
+const RANGES = {
+  '1h':  { n: 60, stepMin: 1,   label: '逐分钟 · 最近 1 小时',  swing: 17 },
+  '6h':  { n: 72, stepMin: 5,   label: '每 5 分钟 · 最近 6 小时', swing: 22 },
+  '24h': { n: 96, stepMin: 15,  label: '每 15 分钟 · 最近 24 小时', swing: 28 },
+  '7d':  { n: 84, stepMin: 120, label: '每 2 小时 · 最近 7 天', swing: 34 },
+};
+
+let currentRange = '1h';
+let series = [];
+
+function buildSeries(range) {
+  const rng = makeRng(20261012);
+  const { n, stepMin, swing } = RANGES[range];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / n;
+    const base = 34 + swing * Math.sin(t * Math.PI * 2 * 1.3) + 9 * Math.sin(t * Math.PI * 2 * 3.4 + 1.1);
+    const total = Math.max(5, Math.round(base + (i % 11 === 4 ? 12 : 0)));
+    const errors = (i % 19 === 5 || i % 27 === 11) ? 1 + Math.round(rng() * 2) : (rng() < 0.08 ? 1 : 0);
+    out.push({
+      total, errors,
+      tokens: Math.round(total * (160 + rng() * 190)),
+      p95: Math.round((680 + total * 22 + rng() * 420) / 10) * 10,
+      minsAgo: (n - i) * stepMin,
+    });
+  }
+  return out;
+}
+
+/* ── 图表交互：十字准线读数 ── */
+const flowWrap = document.getElementById('flow-wrap');
+const crosshair = document.getElementById('crosshair');
+const tip = document.getElementById('tip');
+
+function onMove(e) {
+  const rect = flowWrap.getBoundingClientRect();
+  const padL = 44 / 1100, padR = 8 / 1100;
+  const ratio = (e.clientX - rect.left) / rect.width;
+  const t = (ratio - padL) / (1 - padL - padR);
+  const idx = Math.round(t * (series.length - 1));
+  if (idx < 0 || idx >= series.length) return onLeave();
+
+  const d = series[idx];
+  const px = (padL + (idx / (series.length - 1)) * (1 - padL - padR)) * rect.width;
+  crosshair.style.left = px + 'px';
+  crosshair.classList.add('on');
+
+  const m = d.minsAgo;
+  const when = m >= 1440 ? `${Math.round(m / 1440)} 天前` : m >= 60 ? `${Math.round(m / 60)} 小时前` : `${m} 分钟前`;
+  tip.innerHTML =
+    `<b>${when}</b>` +
+    `<div class="row">请求<span class="num">${d.total.toLocaleString()}</span></div>` +
+    `<div class="row">错误<span class="num">${d.errors}</span></div>` +
+    `<div class="row">P95<span class="num">${(d.p95 / 1000).toFixed(2)}s</span></div>`;
+
+  const tw = tip.offsetWidth;
+  let left = px;
+  if (left + tw / 2 > rect.width) left = rect.width - tw / 2 - 4;
+  if (left - tw / 2 < 0) left = tw / 2 + 4;
+  tip.style.left = left + 'px';
+  tip.style.top = '-4px';
+  tip.classList.add('on');
+}
+function onLeave() { crosshair.classList.remove('on'); tip.classList.remove('on'); }
+flowWrap.addEventListener('mousemove', onMove);
+flowWrap.addEventListener('mouseleave', onLeave);
+
+/* ── 渲染 ── */
+function render() {
+  const flow = document.getElementById('flow');
+  drawChart(flow, series, {
+    w: 1100, h: 200, key: 'total', color: '#2563eb', showErrors: true,
+    axisLabel: (d) => {
+      const m = d.minsAgo;
+      return m >= 1440 ? `${Math.round(m / 1440)}d` : m >= 60 ? `${Math.round(m / 60)}h` : `${m}m`;
+    },
+  });
+
+  const last30 = series.slice(-30);
+  const sum = series.reduce((a, d) => a + d.total, 0);
+  const errs = series.reduce((a, d) => a + d.errors, 0);
+  const rate = Math.round(sum / series.length);
+  const rateLast = series[series.length - 1].total;
+  const okRate = ((1 - errs / sum) * 100);
+  const p95 = series[series.length - 1].p95;
+
+  // 读数：切换范围后数值随之变化，让「范围」这个操作有真实反馈
+  document.getElementById('v-rate').textContent = rateLast;
+  document.getElementById('d-rate').textContent = `区间合计 ${sum.toLocaleString()} 次`;
+  document.getElementById('v-ok').textContent = okRate.toFixed(1);
+  document.getElementById('d-ok').textContent = `失败 ${errs} 次`;
+  document.getElementById('v-p95').textContent = (p95 / 1000).toFixed(2);
+  document.getElementById('v-tok').textContent = (series[series.length - 1].tokens / 1000).toFixed(1);
+  document.getElementById('d-tok').textContent = `${(sum - errs).toLocaleString()}/${sum.toLocaleString()} 次上报用量`;
+
+  sparkline(document.getElementById('s-rate'), last30.map((d) => d.total), '#2563eb');
+  sparkline(document.getElementById('s-ok'), last30.map((d) => d.errors), '#b91c1c');
+  sparkline(document.getElementById('s-p95'), last30.map((d) => d.p95), '#6b6b74');
+  sparkline(document.getElementById('s-tok'), last30.map((d) => d.tokens), '#2563eb');
+
+  document.getElementById('flow-note').textContent = RANGES[currentRange].label;
+}
+
+/* ── 近期错误：只留 5 条，多了说明该去日志页 ── */
+const ERRORS = [
+  ['14:31:49', 429, 'rate limit exceeded, retry after 3s'],
+  ['14:31:14', 500, 'upstream returned 500'],
+  ['14:28:02', 504, 'connect timeout after 30s'],
+  ['14:22:41', 429, 'rate limit exceeded'],
+  ['14:19:08', 500, 'upstream stream aborted'],
+];
+document.getElementById('errors').innerHTML = ERRORS.map(([t, code, msg]) =>
+  `<div class="list-item">
+    <span class="t">${t}</span>
+    <span class="code ${code >= 500 ? 'e5' : 'e4'}">${code}</span>
+    <span class="msg" title="${msg}">${msg}</span>
+  </div>`).join('');
+
+/* ── 模型用量：2px 细线占比，不用圆角进度条 ── */
+const MODELS = [
+  ['DeepSeek-V4-Pro', 812], ['GLM-5.3', 604], ['Kimi-K3', 431],
+  ['Hunyuan-Turbos', 288], ['Deepseek-V4-Flash', 176],
+];
+const mMax = Math.max(...MODELS.map((m) => m[1]));
+document.getElementById('models').innerHTML = MODELS.map(([nm, v]) =>
+  `<div class="bar-row">
+    <span class="nm" title="${nm}">${nm}</span>
+    <span class="track"><i class="fill" style="width:${(v / mMax * 100).toFixed(1)}%;display:block"></i></span>
+    <span class="v">${v.toLocaleString()}</span>
+  </div>`).join('');
+
+/* ── 交互 ── */
+document.getElementById('range').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-r]');
+  if (!b) return;
+  document.querySelectorAll('#range button').forEach((x) => x.classList.toggle('on', x === b));
+  currentRange = b.dataset.r;
+  series = buildSeries(currentRange);
+  render();
+});
+
+document.getElementById('refresh').addEventListener('click', function () {
+  this.style.transition = 'transform 600ms cubic-bezier(.16,1,.3,1)';
+  this.style.transform = 'rotate(360deg)';
+  setTimeout(() => { this.style.transition = 'none'; this.style.transform = ''; }, 620);
+  series = buildSeries(currentRange);
+  render();
+});
+
+series = buildSeries(currentRange);
+render();
+</script>
+</body>
+</html>

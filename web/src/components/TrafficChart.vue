@@ -122,7 +122,7 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
               :y="bar.successY"
               :width="bar.width"
               :height="bar.successH"
-              rx="1.4"
+              rx="0"
               class="bar-success"
             />
             <rect
@@ -131,7 +131,7 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
               :y="bar.errorY"
               :width="bar.width"
               :height="bar.errorH"
-              rx="1.4"
+              rx="0"
               class="bar-error"
             />
           </template>
@@ -194,32 +194,31 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
 
 .bar-error {
   fill: var(--chart-error);
-  opacity: 0.85;
 }
 
 .crosshair {
-  stroke: var(--text-3);
+  stroke: var(--line-strong);
   stroke-width: 1;
-  stroke-dasharray: 3 3;
   vector-effect: non-scaling-stroke;
 }
 
+/* 浮层读数：极简下用深色实底而非「白底 + 边框 + 阴影」三层装饰，
+   在浅色页面上更干净，也避免与图表柱体糊在一起 */
 .tooltip {
   position: absolute;
   top: 0;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
+  background: var(--text);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  font-size: 11.5px;
   min-width: 132px;
   pointer-events: none;
-  box-shadow: var(--shadow-pop);
   z-index: 2;
 }
 
 .tip-time {
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.6);
   margin-bottom: 4px;
   font-variant-numeric: tabular-nums;
 }
@@ -232,7 +231,7 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
 }
 
 .tip-row span {
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .tip-row b {
@@ -240,7 +239,7 @@ const totalWindow = computed(() => props.series.reduce((sum, item) => sum + item
 }
 
 .tip-row b.bad {
-  color: var(--danger);
+  color: #fca5a5;
 }
 
 .axis {

@@ -20,6 +20,23 @@
       }),
     ],
     ['模型目录', renderPublicModelsPage([{ id: 'hy4-preview', _name: 'Hy4 preview' }])],
+    [
+      '落地页·模型目录页签',
+      renderLandingPage(
+        {
+          startedAt: Date.now(),
+          uptimeMs: 1000,
+          modelCount: 42,
+          sampleModel: 'deepseek-v4-pro',
+          credentialPool: 'good',
+        },
+        [
+          { id: 'hy4-preview', _name: 'Hy4 preview', _credits: 'x0.00 credits', _maxInputTokens: 1000000 },
+          { id: 'glm-5.3', _name: 'GLM-5.3', _credits: 'x0.79 credits', _maxInputTokens: 1000000 },
+        ],
+        'cn',
+      ),
+    ],
     ['健康页', renderHealthPage()],
   ];
 
@@ -42,9 +59,14 @@
     if (label === '落地页') {
       assert.ok(html.includes('/v1/messages'));
       assert.ok(html.includes('/admin'));
-      // 状态门面:运行时长与凭证池档位必须渲染出来
-      assert.ok(html.includes('3 天 4 小时'), '落地页需展示运行时长');
-      assert.ok(html.includes('42'), '落地页需展示模型目录规模');
+      // 极简改版后落地页只回答「这是什么 / 怎么接」：运行时长与凭证池档位
+      // 属运维信息，已收进控制台，不再出现在公开页。
+      assert.ok(!html.includes('已运行'), '落地页不应再展示运行时长（已收进控制台）');
+      assert.ok(!html.includes('凭证池'), '落地页不应再展示凭证池状态（已收进控制台）');
+      // 页签与 Banner 是这一版的信息架构：接入方式 / 模型目录二选一
+      assert.ok(html.includes('接入方式'), '落地页需含「接入方式」页签');
+      assert.ok(html.includes('模型目录'), '落地页需含「模型目录」页签');
+      assert.ok(html.includes('一套上游凭证'), '落地页需含一句话 Banner');
       // 安全边界:公开页面不得出现任何计数口径
       assert.ok(!/凭证池[\s\S]{0,80}\d+\s*\/\s*\d+/.test(html), '落地页不得暴露凭证数量');
 
@@ -60,6 +82,15 @@
         );
       });
       assert.ok(html.includes('deepseek-v4-pro'), '示例应引用真实目录中的模型');
+    }
+    if (label === '落地页·模型目录页签') {
+      // 切到模型目录页签时：不渲染 curl 示例，改渲染模型网格 + 区域切换
+      assert.ok(html.includes('model-grid'), '模型目录页签需渲染模型网格');
+      assert.ok(html.includes('hy4-preview') && html.includes('glm-5.3'), '需含传入的真实模型');
+      assert.ok(html.includes('国内版') && html.includes('国际版'), '需含区域切换');
+      assert.ok(!html.includes('<pre><code>'), '模型目录页签不应再渲染 curl 示例');
+      // 上下文长度要归一成 K/M，否则 1000000 这种数字在密集网格里读不动
+      assert.ok(html.includes('1M'), '上下文长度应归一为 1M');
     }
   }
 

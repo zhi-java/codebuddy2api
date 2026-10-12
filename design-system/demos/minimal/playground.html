@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>对话 · CodeBuddy Gateway</title>
+<!--
+  对话（极简版）
+  ─────────────────────────────────────────────────────────────
+  这一页只回答一个问题：**这条链路的真实表现如何？**
+
+  相对原控制台删掉的：
+    · 系统提示词输入框 —— 收进「高级」折叠区（日常对话不改它）
+    · 参数区的说明文字堆砌 —— 只留必要提示
+
+  保留：凭证/模型选择、温度、最大 token、真流式逐字输出、
+        思考过程折叠、用量脚注、随时中止、多轮对话。
+-->
+<link rel="stylesheet" href="shell.css" />
+<style>
+  .layout { display: grid; grid-template-columns: 280px 1fr; gap: 40px; align-items: start; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; gap: 28px; } }
+
+  /* 对话区：撑满视口剩余高度，输入框固定在底部 */
+  .chat { display: flex; flex-direction: column; height: calc(100vh - 232px); min-height: 440px; }
+  .stream { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 24px; padding-right: 4px; }
+
+  .msg-role { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .msg-role .who { font-size: 11.5px; font-weight: 640; color: var(--text-2); }
+  .msg-role .meta { font-size: 11px; color: var(--text-3); font-family: var(--mono); }
+
+  /* 用户消息：右对齐、浅底、无边框。不用蓝色气泡（蓝色是「可点击」专用） */
+  .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg.user .msg-role { justify-content: flex-end; }
+  .msg.user .bubble {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 10px; padding: 11px 14px;
+    font-size: 13px; line-height: 1.65; max-width: 76%;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  .msg.assistant .bubble { font-size: 13px; line-height: 1.75; max-width: 92%; }
+  .msg.assistant .bubble p { margin: 0 0 11px; }
+  .msg.assistant .bubble p:last-child { margin-bottom: 0; }
+  .msg.assistant .bubble code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--bg); border: 1px solid var(--line);
+    padding: 1px 5px; border-radius: 4px;
+  }
+
+  /* 思考过程：左侧一条细线，不用彩色底 —— 极简下不用背景色分区 */
+  .reasoning { border-left: 2px solid var(--line-strong); padding-left: 13px; margin-bottom: 14px; }
+  .reasoning-head {
+    display: flex; align-items: center; gap: 7px; cursor: pointer;
+    font-size: 11.5px; font-weight: 600; color: var(--text-3);
+    user-select: none; margin-bottom: 7px;
+  }
+  .reasoning-head .chev { transition: transform 200ms var(--ease); }
+  .reasoning.collapsed .chev { transform: rotate(-90deg); }
+  .reasoning-body {
+    font-size: 12px; line-height: 1.75; color: var(--text-3);
+    white-space: pre-wrap; max-height: 260px; overflow-y: auto;
+  }
+  .reasoning.collapsed .reasoning-body { display: none; }
+  .reasoning-head .live { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); animation: blink 1s ease-in-out infinite; }
+  @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: .2 } }
+
+  .caret { display: inline-block; width: 6px; height: 14px; background: var(--text); vertical-align: -2px; margin-left: 1px; animation: blink 1s steps(1) infinite; }
+
+  .usage { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .usage b { font-weight: 600; color: var(--text-2); font-family: var(--mono); }
+
+  .composer { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .composer-acts { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 10px; }
+
+  @media (max-width: 980px) { .chat { height: auto; } .stream { max-height: 58vh; } }
+</style>
+</head>
+<body>
+<div id="topbar"></div>
+
+<main class="page">
+  <div class="page-head">
+    <div>
+      <h1>对话</h1>
+      <p>用真实凭证流式对话，验证连通性、思考输出与首字延迟。</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn" id="btn-clear">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+        清空
+      </button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- 左：参数 -->
+    <div>
+      <div class="field">
+        <label class="label" for="p-cred">上游凭证</label>
+        <select class="select" id="p-cred">
+          <option>cli-main</option><option>cli-backup</option>
+          <option>ck-team</option><option>ck-lite</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="label" for="p-model">模型</label>
+        <select class="select" id="p-model">
+          <option>DeepSeek-V4-Pro</option><option>GLM-5.3</option>
+          <option>Kimi-K3</option><option>Hunyuan-Turbos</option>
+          <option>Deepseek-V4-Flash</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="label" for="p-temp">温度 <span class="mono" id="temp-v" style="text-transform:none;letter-spacing:0">0.7</span></label>
+        <input type="range" id="p-temp" min="0" max="2" step="0.1" value="0.7"
+               style="width:100%;-webkit-appearance:none;height:2px;background:var(--line);outline:none" />
+      </div>
+
+      <div class="field">
+        <label class="label" for="p-max">最大输出 tokens</label>
+        <input class="input" type="number" id="p-max" value="4096" />
+      </div>
+
+      <!-- 高级参数默认折叠：日常对话不改它们 -->
+      <div class="field">
+        <button class="btn-text" id="adv-toggle" style="padding:0">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="adv-chev"><path d="m6 9 6 6 6-6"/></svg>
+          高级参数
+        </button>
+        <div id="adv" style="display:none;margin-top:16px">
+          <div class="field">
+            <label class="label" for="p-sys">系统提示词</label>
+            <textarea class="textarea" id="p-sys" rows="3" placeholder="你是 CodeBuddy 助手…" style="min-height:64px"></textarea>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0">
+            <span class="sub">系统提示词改写</span>
+            <label class="switch"><input type="checkbox" checked /><span></span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：对话 -->
+    <div class="chat">
+      <div class="stream" id="stream">
+        <div class="empty" style="padding:60px 20px">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+          <b>还没有请求</b>
+          <span>输入问题后发送，回复会逐字流式显示；思考过程可折叠查看。</span>
+        </div>
+      </div>
+
+      <div class="composer">
+        <textarea class="textarea" id="draft" rows="2" placeholder="输入消息，Enter 发送（Shift+Enter 换行）">用三句话说明这个网关的故障转移是怎么工作的。</textarea>
+        <div class="composer-acts">
+          <span class="sub" id="stream-state"></span>
+          <button class="btn btn-primary" id="send">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+            发送
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="shared.js"></script>
+<script>
+mountTopbar('playground');
+
+const REASONING =
+`用户想知道故障转移机制。我需要覆盖三个层面：
+1) 触发条件——什么情况下判定凭证不可用（429/5xx、连接超时、token 刷新失败）；
+2) 选择策略——按健康度与剩余额度排序；
+3) 恢复路径——冷却窗口结束后重新参与调度，而不是永久剔除。
+还要提一句：请求已在传输中时不能重试，否则会造成重复计费。`;
+
+const CONTENT =
+`网关的故障转移分三步走。
+
+第一，判定失败。一个凭证在连接阶段返回 429、5xx，或 token 刷新失败时，会被立刻标记为不可用。注意判定只发生在连接建立阶段——如果响应已经开始流式返回，就不会再切换，否则同一个请求会在上游产生两份计费。
+
+第二，挑选替补。剩余凭证按「健康度 → 剩余额度 → 最近失败时间」排序，取第一个可用的继续本次请求。
+
+第三，冷却与恢复。失败凭证进入冷却窗口（默认 180 秒），窗口内不参与调度；窗口结束后自动回到池子里。连续失败的凭证会被逐级拉长冷却时间，避免反复撞同一个坏凭证。
+
+整个过程对客户端透明：你看到的仍然是同一个 request_id，只有响应头里的 x-gateway-credential 会变化。`;
+
+const stream = document.getElementById('stream');
+const draft = document.getElementById('draft');
+let running = false, abort = false;
+
+/* 极简的 markdown 处理：只支持行内 code 与段落 */
+function toHtml(text) {
+  const esc = text.replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+  return esc.split('\n\n').map((p) => `<p>${p.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>')}</p>`).join('');
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function run() {
+  const text = draft.value.trim();
+  if (!text || running) return;
+  running = true; abort = false;
+
+  document.querySelector('#stream .empty')?.remove();
+
+  // 用户消息
+  const u = document.createElement('div');
+  u.className = 'msg user';
+  u.innerHTML = `<div class="msg-role"><span class="who">我</span></div><div class="bubble">${text.replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]))}</div>`;
+  stream.appendChild(u);
+
+  // 助手消息外壳
+  const a = document.createElement('div');
+  a.className = 'msg assistant';
+  a.innerHTML = `
+    <div class="msg-role"><span class="who">${document.getElementById('p-model').value}</span></div>
+    <div class="reasoning" id="r-block">
+      <div class="reasoning-head" id="r-head">
+        ${icon('activity', 12)}思考过程<i class="live" id="r-live"></i>
+        <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+      <div class="reasoning-body" id="r-body"></div>
+    </div>
+    <div class="bubble" id="a-bubble"></div>`;
+  stream.appendChild(a);
+
+  const rBlock = a.querySelector('#r-block');
+  const rBody = a.querySelector('#r-body');
+  const bubble = a.querySelector('#a-bubble');
+  const t0 = performance.now();
+
+  setState('思考中…');
+  setSend(true);
+
+  // 阶段一：思考逐字输出
+  let buf = '';
+  for (const ch of REASONING) {
+    if (abort) break;
+    buf += ch;
+    rBody.textContent = buf;
+    rBody.scrollTop = rBody.scrollHeight;
+    stream.scrollTop = stream.scrollHeight;
+    await sleep(ch === '\n' ? 22 : 6);
+  }
+  a.querySelector('#r-live')?.remove();
+
+  // 思考结束自动折叠，把注意力让给正文
+  if (!abort) { await sleep(160); rBlock.classList.add('collapsed'); }
+
+  // 阶段二：正文逐字输出
+  setState('生成中…');
+  let out = '';
+  for (const ch of CONTENT) {
+    if (abort) break;
+    out += ch;
+    bubble.innerHTML = toHtml(out) + '<span class="caret"></span>';
+    stream.scrollTop = stream.scrollHeight;
+    await sleep(ch === '\n' ? 18 : 4);
+  }
+  bubble.innerHTML = toHtml(out);
+
+  // 用量脚注：与真实链路一致，由上游 usage 回填
+  const dur = performance.now() - t0;
+  const pt = 128 + Math.round(text.length * 0.9);
+  const ct = Math.round(out.length * 0.75) + 96;
+  const foot = document.createElement('div');
+  foot.className = 'usage';
+  foot.innerHTML = `
+    <span>输入 <b>${pt.toLocaleString()}</b></span>
+    <span>输出 <b>${ct.toLocaleString()}</b></span>
+    <span>合计 <b>${(pt + ct).toLocaleString()}</b> tokens</span>
+    <span>积分 <b>${Math.max(1, Math.round((pt + ct) / 720))}</b></span>
+    <span>耗时 <b>${(dur / 1000).toFixed(2)}s</b></span>
+    ${abort ? '<span class="bad">已中止</span>' : ''}`;
+  a.appendChild(foot);
+
+  running = false;
+  setSend(false);
+  setState(abort ? '已中止' : `完成 · 首字 ${(dur / 1000).toFixed(2)}s`);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+function setState(t) { document.getElementById('stream-state').textContent = t; }
+
+function setSend(isRunning) {
+  const btn = document.getElementById('send');
+  if (isRunning) {
+    btn.innerHTML = icon('stop', 14) + '中止';
+    btn.style.background = 'var(--bad)';
+    btn.style.borderColor = 'var(--bad)';
+  } else {
+    btn.innerHTML = icon('send', 14) + '发送';
+    btn.style.background = '';
+    btn.style.borderColor = '';
+  }
+}
+
+document.getElementById('send').addEventListener('click', () => {
+  if (running) { abort = true; setState('中止中…'); return; }
+  void run();
+});
+
+draft.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!running) void run(); }
+});
+
+/* 思考块折叠切换 */
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#r-head')) document.getElementById('r-block')?.classList.toggle('collapsed');
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  if (running) return;
+  stream.innerHTML = `
+    <div class="empty" style="padding:60px 20px">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+      <b>还没有请求</b>
+      <span>输入问题后发送，回复会逐字流式显示；思考过程可折叠查看。</span>
+    </div>`;
+  setState('');
+});
+
+/* 温度滑块 */
+document.getElementById('p-temp').addEventListener('input', (e) => {
+  document.getElementById('temp-v').textContent = e.target.value;
+});
+
+/* 高级参数折叠 */
+document.getElementById('adv-toggle').addEventListener('click', () => {
+  const adv = document.getElementById('adv');
+  const open = adv.style.display === 'none';
+  adv.style.display = open ? 'block' : 'none';
+  document.getElementById('adv-chev').style.transform = open ? 'rotate(180deg)' : '';
+});
+</script>
+</body>
+</html>

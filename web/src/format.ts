@@ -168,14 +168,14 @@ export function supportsCheckin(credential: { region?: string }): boolean {
 
 export const STATUS_META: Record<
   string,
-  { label: string; type: 'success' | 'warning' | 'error' | 'default' | 'info' }
+  { label: string; type: 'success' | 'warning' | 'error' | 'default' | 'info'; tone: '' | 'ok' | 'warn' | 'bad' }
 > = {
-  healthy: { label: '健康', type: 'success' },
-  cooling: { label: '冷却中', type: 'warning' },
-  expired: { label: '已过期', type: 'error' },
-  disabled: { label: '已停用', type: 'default' },
-  error: { label: '异常', type: 'error' },
-  refreshing: { label: '刷新中', type: 'info' },
+  healthy: { label: '健康', type: 'success', tone: 'ok' },
+  cooling: { label: '冷却中', type: 'warning', tone: 'warn' },
+  expired: { label: '已过期', type: 'error', tone: 'bad' },
+  disabled: { label: '已停用', type: 'default', tone: '' },
+  error: { label: '异常', type: 'error', tone: 'bad' },
+  refreshing: { label: '刷新中', type: 'info', tone: '' },
 };
 
 export const LEVEL_META: Record<string, { label: string; type: 'default' | 'warning' | 'error' }> = {

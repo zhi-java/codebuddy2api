@@ -1,55 +1,63 @@
 <script setup lang="ts">
 /**
- * 页头：标题 + 说明 + 右侧操作区。
- * 所有视图统一用它，保证标题排版与操作按钮位置一致。
+ * 视图页头：标题 + 一句说明 + 右侧操作。
+ *
+ * 极简口径：说明文字限制在一行可读长度内，不再堆叠多行副标题。
  */
 defineProps<{ title: string; desc?: string }>();
 </script>
 
 <template>
-  <header class="head">
-    <div class="meta">
+  <div class="page-head">
+    <div>
       <h1>{{ title }}</h1>
       <p v-if="desc">{{ desc }}</p>
     </div>
-    <div class="actions">
+    <div v-if="$slots.default" class="actions">
       <slot />
     </div>
-  </header>
+  </div>
 </template>
 
 <style scoped>
-.head {
+.page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 24px;
   flex-wrap: wrap;
-  margin-bottom: 18px;
-}
-
-.meta {
-  min-width: 0;
+  margin-bottom: 32px;
 }
 
 h1 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  font-size: 22px;
+  font-weight: 640;
+  letter-spacing: -0.025em;
 }
 
 p {
-  margin: 4px 0 0;
+  margin: 7px 0 0;
   font-size: 13px;
   color: var(--text-3);
-  max-width: 68ch;
+  max-width: 560px;
 }
 
 .actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
   flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .page-head {
+    margin-bottom: 24px;
+  }
+
+  h1 {
+    font-size: 19px;
+  }
 }
 </style>

@@ -1,206 +1,95 @@
 <script setup lang="ts">
 /**
- * 指标卡：标签 + 主数值 + 环比 + 迷你趋势。
+ * 读数（KPI）。
  *
- * 三个层次按阅读优先级排布——数值最大，标签次之，环比与趋势只作佐证。
- * 趋势线在数据不足两点时不渲染：空卡片里画一条假线比不画更糟。
+ * 极简口径：**不做卡片**。上一版是「白卡 + 阴影 + 图标块 + 趋势线 + 边框」，
+ * 四张并排时视觉噪音远大于信息量。现在只保留「标签 / 读数 / 一行说明 / 细趋势线」，
+ * 由父容器用发丝竖线分隔（见 styles.css 的 .stats / .stat）。
+ *
+ * 趋势线是**佐证**而非主体：它回答「这个读数是涨还是跌」，故压到 24px 高、
+ * 用极淡填充，不与读数争夺注意力。
  */
 import { computed } from 'vue';
-import AppIcon from './AppIcon.vue';
 
 const props = withDefaults(
   defineProps<{
     label: string;
-    value: string;
-    /** 数值后缀，如 /min、% */
+    value: string | number;
     unit?: string;
     hint?: string;
-    icon?: string;
+    /** 状态色调：只影响读数颜色，不做背景块 */
     tone?: 'default' | 'good' | 'warn' | 'bad' | 'info';
-    /** 迷你趋势的原始值数组（内部按极值归一化，无需预处理） */
+    /** 迷你趋势序列 */
     trend?: number[];
-    /** 环比文案，如「较昨日 +12.5%」 */
-    deltaText?: string;
-    deltaTone?: 'up' | 'down' | 'flat';
+    /** 趋势线颜色；缺省跟随 tone */
+    trendColor?: string;
   }>(),
-  { tone: 'default', deltaTone: 'flat' },
+  { tone: 'default', trend: () => [] },
 );
 
-const SPARK_W = 100;
-const SPARK_H = 28;
+const toneClass = computed(() => (props.tone === 'default' ? '' : props.tone));
 
-/** 迷你趋势：折线 + 面积填充，按自身极值归一化 */
-const spark = computed(() => {
-  const data = props.trend ?? [];
-  if (data.length < 2) return null;
-
-  const max = Math.max(...data);
-  const min = Math.min(...data);
+/** 迷你趋势：细折线 + 极淡填充。数据点不足 2 个时不画。 */
+const trendPath = computed(() => {
+  const values = props.trend;
+  if (values.length < 2) return null;
+  const w = 240;
+  const h = 24;
+  const pad = 2;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
   const span = max - min || 1;
-
-  const points = data.map((value, index) => {
-    const x = (index / (data.length - 1)) * SPARK_W;
-    const y = SPARK_H - ((value - min) / span) * (SPARK_H - 6) - 3;
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * w;
+    const y = h - pad - ((v - min) / span) * (h - pad * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
-
-  const line = `M${points.join(' L')}`;
-  return { line, area: `${line} L${SPARK_W},${SPARK_H} L0,${SPARK_H} Z` };
+  return { line: `M${pts.join('L')}`, area: `M${pts.join('L')}L${w},${h}L0,${h}Z`, w, h };
 });
 
-const deltaIcon = computed(() => (props.deltaTone === 'up' ? 'arrow-up' : props.deltaTone === 'down' ? 'arrow-down' : ''));
+const lineColor = computed(() => {
+  if (props.trendColor) return props.trendColor;
+  return (
+    { good: 'var(--ok)', warn: 'var(--warn)', bad: 'var(--bad)', info: 'var(--accent)' }[
+      props.tone as string
+    ] ?? 'var(--text-3)'
+  );
+});
 </script>
 
 <template>
-  <div class="kpi" :class="`tone-${tone}`">
-    <div class="top">
-      <span class="label">{{ label }}</span>
-      <AppIcon v-if="icon" :name="icon" :size="15" class="ico" />
+  <div class="stat">
+    <div class="stat-k label">{{ label }}</div>
+    <div class="stat-v" :class="toneClass">
+      {{ value }}<small v-if="unit">{{ unit }}</small>
     </div>
-
-    <div class="value tnum">
-      {{ value }}<small v-if="unit && value !== '—'">{{ unit }}</small>
-    </div>
-
-    <div v-if="hint || deltaText" class="meta">
-      <span v-if="deltaText" class="delta" :class="deltaTone">
-        <AppIcon v-if="deltaIcon" :name="deltaIcon" :size="12" />
-        {{ deltaText }}
-      </span>
-      <span v-if="hint" class="hint">{{ hint }}</span>
-    </div>
-
-    <svg v-if="spark" class="spark" :viewBox="`0 0 ${SPARK_W} ${SPARK_H}`" preserveAspectRatio="none" aria-hidden="true">
-      <path :d="spark.area" class="spark-area" />
-      <path :d="spark.line" class="spark-line" />
+    <div v-if="hint" class="stat-d">{{ hint }}</div>
+    <svg
+      v-if="trendPath"
+      class="spark"
+      :viewBox="`0 0 ${trendPath.w} ${trendPath.h}`"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <path :d="trendPath.area" :fill="lineColor" opacity="0.07" />
+      <path
+        :d="trendPath.line"
+        fill="none"
+        :stroke="lineColor"
+        stroke-width="1.3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        vector-effect="non-scaling-stroke"
+      />
     </svg>
   </div>
 </template>
 
 <style scoped>
-.kpi {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 16px 0;
-  min-height: 112px;
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  overflow: hidden;
-  transition: border-color var(--dur) var(--ease);
-}
-
-.kpi:hover {
-  border-color: var(--border);
-}
-
-.top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.label {
-  font-size: 12.5px;
-  color: var(--text-3);
-}
-
-.ico {
-  color: var(--text-3);
-  opacity: 0.65;
-}
-
-.value {
-  font-size: 25px;
-  font-weight: 650;
-  letter-spacing: -0.025em;
-  line-height: 1.15;
-}
-
-.value small {
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--text-3);
-  margin-left: 3px;
-  letter-spacing: 0;
-}
-
-.meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: 11.5px;
-  color: var(--text-3);
-  min-height: 16px;
-}
-
-.delta {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.delta.up {
-  color: var(--accent);
-}
-
-.delta.down {
-  color: var(--danger);
-}
-
-.delta.flat {
-  color: var(--text-3);
-}
-
-/* 趋势线贴住卡片底边，作为背景佐证而非主体 */
 .spark {
+  width: 100%;
+  height: 24px;
   display: block;
-  width: calc(100% + 32px);
-  height: 34px;
-  margin: auto -16px 0;
-}
-
-.spark-line {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-  vector-effect: non-scaling-stroke;
-  opacity: 0.9;
-}
-
-.spark-area {
-  fill: currentColor;
-  opacity: 0.12;
-  stroke: none;
-}
-
-.tone-good .value,
-.tone-good .spark {
-  color: var(--accent);
-}
-
-.tone-warn .value,
-.tone-warn .spark {
-  color: var(--warn);
-}
-
-.tone-bad .value,
-.tone-bad .spark {
-  color: var(--danger);
-}
-
-.tone-info .value,
-.tone-info .spark {
-  color: var(--info);
-}
-
-.tone-default .spark {
-  color: var(--text-3);
+  margin-top: 12px;
 }
 </style>

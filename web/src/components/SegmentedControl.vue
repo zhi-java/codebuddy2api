@@ -1,81 +1,73 @@
 <script setup lang="ts">
 /**
- * 分段控件：一组互斥选项的紧凑切换（时间范围、度量维度）。
+ * 分段控件。
  *
- * 用 radiogroup 语义而非普通按钮组：读屏会播报「第 2 项，共 4 项」，
- * 方向键也能切换——这是原生 select 之外唯一被广泛支持的单选模式。
+ * 极简口径：用**下划线**表示选中，不用滑块背景块。
+ * 上一版是「灰底容器 + 白色滑块 + 阴影」，三个装饰层只为表达一个状态。
+ * 这里改成与顶栏导航同一套语言（文字 + 2px 下划线），全站选中态一致。
  */
-defineProps<{
-  options: Array<{ value: string; label: string; hint?: string }>;
-  modelValue: string;
-  /** 无障碍分组名 */
-  label?: string;
-}>();
+withDefaults(
+  defineProps<{
+    modelValue: string;
+    options: { value: string; label: string }[];
+    /** 无障碍标签；视觉上不显示 */
+    label?: string;
+  }>(),
+  { label: '' },
+);
 
-const emit = defineEmits<{ (event: 'update:modelValue', value: string): void }>();
-
-function onKeydown(event: KeyboardEvent, index: number, total: number, options: Array<{ value: string }>): void {
-  const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
-    : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1
-      : 0;
-  if (step === 0) return;
-  event.preventDefault();
-  const next = (index + step + total) % total;
-  emit('update:modelValue', options[next].value);
-}
+const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 </script>
 
 <template>
-  <div class="seg" role="radiogroup" :aria-label="label">
+  <div class="seg" role="group" :aria-label="label || undefined">
     <button
-      v-for="(option, index) in options"
-      :key="option.value"
+      v-for="item in options"
+      :key="item.value"
       type="button"
-      role="radio"
-      class="item"
-      :class="{ active: option.value === modelValue }"
-      :aria-checked="option.value === modelValue"
-      :title="option.hint"
-      :tabindex="option.value === modelValue ? 0 : -1"
-      @click="emit('update:modelValue', option.value)"
-      @keydown="onKeydown($event, index, options.length, options)"
+      :class="{ on: modelValue === item.value }"
+      :aria-pressed="modelValue === item.value"
+      @click="emit('update:modelValue', item.value)"
     >
-      {{ option.label }}
+      {{ item.label }}
     </button>
   </div>
 </template>
 
 <style scoped>
 .seg {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  background: var(--surface-3);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
+  display: flex;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
 }
 
-.item {
-  padding: 4px 11px;
+.seg button {
+  position: relative;
   border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-3);
-  font: inherit;
+  background: transparent;
+  padding: 0 0 9px;
   font-size: 12.5px;
   font-weight: 550;
-  white-space: nowrap;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  color: var(--text-3);
+  transition: color var(--dur) var(--ease);
 }
 
-.item:hover {
-  color: var(--text-2);
-}
-
-.item.active {
-  background: var(--surface);
+.seg button:hover {
   color: var(--text);
-  box-shadow: var(--shadow-sm);
+}
+
+.seg button.on {
+  color: var(--text);
+  font-weight: 620;
+}
+
+.seg button.on::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--text);
 }
 </style>

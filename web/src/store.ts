@@ -1,20 +1,19 @@
 /**
  * 控制台共享状态。
  *
- * 凭证、Key、运行配置被多个视图复用（总览统计、Key 绑定列表、试跑凭证下拉、
- * 设置页只读配置），集中在一处刷新，避免各视图重复请求与状态分叉。
+ * 凭证、Key 与网关设置被多个视图复用（总览统计、Key 绑定列表、对话凭证下拉、
+ * 凭证页的自动签到开关），集中在一处刷新，避免各视图重复请求与状态分叉。
  */
 
 import { reactive } from 'vue';
 import { api, type DataResponse } from './api';
-import type { CredentialSummary, GatewayConfig, GatewaySettings, GatewayState, KeySummary } from './types';
+import type { CredentialSummary, GatewaySettings, GatewayState, KeySummary } from './types';
 
 export const store = reactive({
   credentials: [] as CredentialSummary[],
   keys: [] as KeySummary[],
   state: null as GatewayState | null,
   settings: null as GatewaySettings | null,
-  config: null as GatewayConfig | null,
   loading: false,
   /** 最近一次基础数据刷新完成的时间戳 */
   refreshedAt: 0,
@@ -68,15 +67,6 @@ export async function saveSettings(patch: Partial<GatewaySettings>): Promise<Gat
   const res = await api<DataResponse<GatewaySettings>>('/admin/api/settings', { method: 'PUT', body: patch });
   store.settings = res.data ?? { autoCheckin: false };
   return store.settings;
-}
-
-/** 读取运行配置(只读,设置页展示)。 */
-export async function loadConfig(force = false): Promise<GatewayConfig> {
-  if (!store.config || force) {
-    const res = await api<DataResponse<GatewayConfig>>('/admin/api/config');
-    store.config = res.data;
-  }
-  return store.config as GatewayConfig;
 }
 
 export function credentialById(id: string): CredentialSummary | undefined {

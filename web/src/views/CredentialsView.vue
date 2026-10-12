@@ -131,25 +131,25 @@ const filtered = computed(() => {
  */
 const firstLoad = computed(() => store.loading && store.refreshedAt === 0);
 
+/**
+ * 状态：一个圆点 + 文字。
+ *
+ * 极简口径下不再用彩色底 + 描边 + 圆角胶囊（三重装饰只为一个状态），
+ * 状态色只出现在圆点上，文字保持中性，避免整行被染色。
+ * 有 lastError 时用 tooltip 带出原因 —— 状态本身要说清「为什么」。
+ */
 function statusTag(row: CredentialSummary) {
-  const meta = STATUS_META[row.status] ?? { label: '未知', type: 'default' as const };
-  const tag = h(NTag, { size: 'small', bordered: false, type: meta.type }, { default: () => meta.label });
-  if (!row.lastError) return tag;
+  const meta = STATUS_META[row.status] ?? { label: '未知', tone: '' };
+  const node = h('span', { class: `st ${meta.tone ?? ''}` }, [h('i'), meta.label]);
+  if (!row.lastError) return node;
   return h(
     NTooltip,
     { trigger: 'hover' },
     {
-      trigger: () => tag,
+      trigger: () => node,
       default: () => h('div', { style: 'max-width:320px;word-break:break-all' }, row.lastError as string),
     },
   );
-}
-
-function tokenReady(row: CredentialSummary): { ok: boolean; text: string } {
-  if (row.kind === 'ck_apikey') return { ok: row.hasApiKey, text: row.hasApiKey ? '已配置' : '缺失' };
-  const access = row.hasAccessToken;
-  const refresh = row.hasRefreshToken;
-  return { ok: access || refresh, text: `access ${access ? '✓' : '✗'} · refresh ${refresh ? '✓' : '✗'}` };
 }
 
 async function run(id: string, label: string, fn: () => Promise<void>): Promise<void> {
@@ -388,74 +388,50 @@ const columns = computed<DataTableColumns<CredentialSummary>>(() => [
     disabled: () => false,
   },
   {
-    title: '名称 / ID',
+    title: '名称',
     key: 'name',
     minWidth: 200,
     render: (row) =>
       h('div', null, [
-        h('div', { style: 'font-weight:550' }, row.name),
-        h('div', { class: 'mono sub' }, row.id),
+        h('div', { class: 'cell-main' }, row.name),
+        // 类型与区域合并进副行：它们是凭证的归属属性，不配各占一列
+        h('div', { class: 'cell-sub' }, [
+          h('span', { class: 'kind' }, KIND_NAME[row.kind] ?? row.kind),
+          ' · ',
+          REGION_NAME[row.region ?? 'cn'],
+        ]),
       ]),
   },
-  {
-    title: '类型 / 区域',
-    key: 'kind',
-    width: 148,
-    render: (row) =>
-      h('div', { class: 'kind-cell' }, [
-        h(NTag, { size: 'small', bordered: false, type: row.kind === 'ck_apikey' ? 'default' : 'info' }, {
-          default: () => KIND_NAME[row.kind] ?? row.kind,
-        }),
-        // 区域用弱化样式：它是凭证的归属属性，不是状态，正常无需强调
-        h(NTag, {
-          size: 'small',
-          bordered: false,
-          type: row.region === 'intl' ? 'warning' : 'default',
-          class: 'region-tag',
-        }, { default: () => REGION_NAME[row.region ?? 'cn'] }),
-      ]),
-  },
-  { title: '状态', key: 'status', width: 96, render: statusTag },
-  {
-    title: '凭证材料',
-    key: 'token',
-    width: 160,
-    render: (row) => {
-      const info = tokenReady(row);
-      return h('span', { class: info.ok ? 'sub' : 'sub bad' }, info.text);
-    },
-  },
+  { title: '状态', key: 'status', width: 110, render: statusTag },
   {
     title: '有效期',
     key: 'expiresAt',
-    width: 168,
+    width: 170,
     render: (row) =>
       h('div', null, [
-        h('div', null, fmtTime(row.expiresAt)),
-        h('div', { class: 'sub' }, row.expiresAt ? relTime(row.expiresAt) : row.kind === 'ck_apikey' ? '不过期' : '—'),
+        h('div', { class: 'mono', style: 'font-size:12px' }, fmtTime(row.expiresAt)),
+        h('div', { class: 'cell-sub' }, row.expiresAt ? relTime(row.expiresAt) : row.kind === 'ck_apikey' ? '不过期' : '—'),
       ]),
   },
   {
-    title: '操作',
+    title: '',
     key: 'actions',
-    width: 168,
+    width: 190,
     align: 'right',
     render: (row) =>
-      h(NSpace, { justify: 'end', size: 4, wrap: false }, {
-        default: () => [
-          h(
-            NButton,
-            { size: 'tiny', quaternary: true, loading: busyId.value === row.id, onClick: () => openQuota(row) },
-            { default: () => '额度' },
-          ),
-          h(NButton, { size: 'tiny', quaternary: true, onClick: () => doTest(row) }, { default: () => '测试' }),
-          h(
-            NDropdown,
-            { options: rowMenu(row), onSelect: (key: string) => onRowMenu(row, key), trigger: 'click' },
-            { default: () => h(NButton, { size: 'tiny', quaternary: true }, { default: () => '更多' }) },
-          ),
-        ],
-      }),
+      h('div', { class: 'row-acts' }, [
+        h(
+          NButton,
+          { size: 'tiny', quaternary: true, loading: busyId.value === row.id, onClick: () => openQuota(row) },
+          { default: () => '额度' },
+        ),
+        h(NButton, { size: 'tiny', quaternary: true, onClick: () => doTest(row) }, { default: () => '测试' }),
+        h(
+          NDropdown,
+          { options: rowMenu(row), onSelect: (key: string) => onRowMenu(row, key), trigger: 'click' },
+          { default: () => h(NButton, { size: 'tiny', quaternary: true }, { default: () => '更多' }) },
+        ),
+      ]),
   },
 ]);
 
@@ -525,63 +501,51 @@ onMounted(async () => {
       </NButton>
     </PageHeader>
 
-    <!-- 状态摘要 chips：既是统计也是过滤器 -->
-    <div class="summary">
-      <button
-        v-for="item in summary"
-        :key="item.key"
-        class="chip"
-        :class="{ active: statusFilter === item.key }"
-        :aria-pressed="statusFilter === item.key"
-        @click="statusFilter = item.key"
-      >
-        <span class="chip-label">{{ item.label }}</span>
-        <span class="chip-value tnum">{{ item.value }}</span>
-      </button>
+    <!-- 状态筛选：既是统计也是过滤器，用下划线表示选中（与全站一致） -->
+    <div class="filters">
+      <div class="seg" role="group" aria-label="凭证状态筛选">
+        <button
+          v-for="item in summary"
+          :key="item.key"
+          type="button"
+          :class="{ on: statusFilter === item.key }"
+          :aria-pressed="statusFilter === item.key"
+          @click="statusFilter = item.key"
+        >
+          {{ item.label }}
+          <span class="n">{{ item.value }}</span>
+        </button>
+      </div>
+
+      <NInput v-model:value="keyword" placeholder="搜索名称或 ID" clearable size="small" style="width: 240px">
+        <template #prefix><AppIcon name="search" :size="14" /></template>
+      </NInput>
+
+      <template v-if="selected.length > 0">
+        <span class="sub">已选 {{ selected.length }} 个</span>
+        <NButton size="tiny" secondary @click="batchTest">测试</NButton>
+        <NButton size="tiny" secondary @click="batchToggle(true)">启用</NButton>
+        <NButton size="tiny" secondary @click="batchToggle(false)">停用</NButton>
+        <NButton size="tiny" quaternary @click="selected = []">取消</NButton>
+      </template>
+
+      <!-- 每日自动签到：低频开关，靠右放，不参与筛选流 -->
+      <div class="checkin">
+        <NPopover trigger="hover" placement="bottom-end" style="max-width: 320px">
+          <template #trigger>
+            <span class="checkin-label">每日自动签到</span>
+          </template>
+          每天 {{ CHECKIN_TIME }} 对全部启用的**国内版**凭证自动签到（Buddy 加油站，每日 100 credits）；
+          未成功的按递增间隔补签，避免断签。国际版无此活动会被跳过。关闭后仅保留行内「立即签到」。
+        </NPopover>
+        <NSwitch size="small" :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
+      </div>
     </div>
 
     <section class="panel">
-      <div class="panel-head">
-        <!-- 计数不在此重复：上方 chips 的每一项（含「全部」）已带数量 -->
-        <div class="panel-title">凭证池</div>
-
-        <div class="panel-head-extra">
-          <NInput v-model:value="keyword" placeholder="搜索凭证名称或 ID" clearable size="small" style="width: 220px">
-            <template #prefix><AppIcon name="search" :size="14" /></template>
-          </NInput>
-
-          <template v-if="selected.length > 0">
-            <span class="sub">已选 {{ selected.length }} 个</span>
-            <NButton size="tiny" secondary @click="batchTest">批量测试</NButton>
-            <NButton size="tiny" secondary @click="batchToggle(true)">启用</NButton>
-            <NButton size="tiny" secondary @click="batchToggle(false)">停用</NButton>
-            <NButton size="tiny" quaternary @click="selected = []">取消</NButton>
-          </template>
-
-          <span class="divider" />
-
-          <div class="checkin-toggle">
-            <span class="checkin-label">每日自动签到</span>
-            <NPopover trigger="hover" placement="bottom-end" style="max-width: 320px">
-              <template #trigger>
-                <AppIcon name="help" :size="14" class="help-ico" />
-              </template>
-              每天 {{ CHECKIN_TIME }} 对全部启用的**国内版**凭证自动签到（Buddy 加油站，每日 100 credits）；
-              未成功的按递增间隔补签，避免断签。国际版无此活动会被跳过。关闭后仅保留行内「立即签到」。
-            </NPopover>
-            <NSwitch size="small" :value="autoCheckin" :loading="savingCheckin" @update:value="toggleAutoCheckin" />
-          </div>
-        </div>
-      </div>
-
       <!-- 首屏用骨架替代整张表：既避免空框，也避免 #empty 的「还没有上游凭证」
            在已有数据时闪现一次（加载期间 data 为空会触发空态插槽） -->
-      <TableSkeleton
-        v-if="firstLoad"
-        class="panel-body"
-        :widths="[1.6, 2.4, 1.1, 1, 0.9, 0.7]"
-        :rows="6"
-      />
+      <TableSkeleton v-if="firstLoad" :widths="[1.6, 0.8, 1, 0.7]" :rows="6" />
 
       <NDataTable
         v-else
@@ -593,8 +557,8 @@ onMounted(async () => {
         size="small"
         :loading="store.loading"
         :row-key="(row: CredentialSummary) => row.id"
-        :scroll-x="1100"
-        :pagination="{ pageSize: 10 }"
+        :scroll-x="820"
+        :pagination="{ pageSize: 12 }"
       >
         <template #empty>
           <EmptyState
@@ -770,76 +734,87 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.summary {
+/* 筛选行：状态（下划线选中）+ 搜索 + 批量操作 + 签到开关 */
+.filters {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 20px;
   flex-wrap: wrap;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-soft);
-  background: var(--surface);
-  color: var(--text-2);
-  font: inherit;
+.seg {
+  display: flex;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.seg button {
+  position: relative;
+  border: none;
+  background: transparent;
+  padding: 0 0 9px;
   font-size: 12.5px;
-  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease);
+  font-weight: 550;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: color var(--dur) var(--ease);
 }
 
-.chip:hover {
-  border-color: var(--border);
+.seg button:hover {
   color: var(--text);
 }
 
-.chip.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+.seg button.on {
   color: var(--text);
+  font-weight: 620;
 }
 
-.chip-value {
-  font-weight: 600;
+.seg button.on::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--text);
 }
 
-/* 面板头里的次要分隔：把「筛选/批量」与「签到开关」在视觉上分开 */
-.divider {
-  width: 1px;
-  height: 18px;
-  background: var(--border-soft);
+/* 计数用等宽并弱化：它是筛选器的注解，不是主体 */
+.seg .n {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
-.checkin-toggle {
+/* 签到开关靠右，与筛选流分开 */
+.checkin {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
+  margin-left: auto;
 }
 
 .checkin-label {
-  font-size: 12.5px;
-  color: var(--text-2);
-}
-
-.help-ico {
+  font-size: 12px;
   color: var(--text-3);
   cursor: help;
+  border-bottom: 1px dashed var(--line-strong);
 }
 
 .bad {
-  color: var(--danger);
+  color: var(--bad);
 }
 
+/* 额度抽屉内的键值列表 */
 .quota {
-  margin-bottom: 16px;
+  margin-bottom: 22px;
 }
 
 .quota-nums {
   display: flex;
   justify-content: space-between;
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 12px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
@@ -851,18 +826,24 @@ onMounted(async () => {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
 .kv li {
   display: flex;
   justify-content: space-between;
-  gap: 14px;
-  font-size: 13px;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.kv li:last-child {
+  border-bottom: none;
 }
 
 .kv span {
   color: var(--text-3);
+  flex: none;
 }
 
 .kv b {
@@ -872,15 +853,13 @@ onMounted(async () => {
 }
 
 :deep(.mono) {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12px;
 }
 
-/* 类型单元格：类型标签 + 区域标签并排 */
-.kind-cell {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+@media (max-width: 720px) {
+  .checkin {
+    margin-left: 0;
+  }
 }
 </style>

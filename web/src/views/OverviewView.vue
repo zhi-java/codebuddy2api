@@ -15,7 +15,6 @@ import {
   NButton,
   NDataTable,
   NSkeleton,
-  NTag,
   NTooltip,
   useMessage,
   type DataTableColumns,
@@ -37,7 +36,6 @@ import {
   fmtCredit,
   fmtDayLabel,
   fmtDayShort,
-  fmtDuration,
   fmtMonthLabel,
   fmtMonthShort,
   fmtMs,
@@ -125,14 +123,6 @@ const successTone = computed(() => {
   if (current.successRate >= 99) return 'good' as const;
   if (current.successRate >= 95) return 'warn' as const;
   return 'bad' as const;
-});
-
-const health = computed(() => {
-  const current = counts.value;
-  if (!current || current.credentials === 0) return null;
-  if (current.healthy === current.credentials) return { type: 'success' as const, text: `凭证 ${current.healthy}/${current.credentials} 健康` };
-  if (current.healthy > 0) return { type: 'warning' as const, text: `凭证 ${current.healthy}/${current.credentials} 可用` };
-  return { type: 'error' as const, text: '无可用凭证' };
 });
 
 /** token 覆盖率：上游未上报用量的请求不计入，标注清楚避免误读为「没消耗」 */
@@ -390,12 +380,12 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   {
     title: '状态',
     key: 'status',
-    width: 86,
+    width: 70,
     render: (row) =>
       h(
-        NTag,
-        { size: 'small', bordered: false, type: row.status < 400 ? 'success' : row.status >= 500 ? 'error' : 'warning' },
-        { default: () => String(row.status) },
+        'span',
+        { class: 'code ' + (row.status >= 500 ? 'bad' : row.status >= 400 ? 'warn' : '') },
+        String(row.status),
       ),
   },
   { title: '耗时', key: 'durationMs', width: 88, align: 'right', render: (row) => h('span', { class: 'tnum' }, fmtMs(row.durationMs)) },
@@ -444,48 +434,28 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   <div class="page stack">
     <PageHeader title="总览" desc="实时口径为进程内最近 60 分钟；归档持久化，重启后可回溯">
       <NButton secondary :loading="loading" @click="refresh">
-        <template #icon><AppIcon name="refresh" :size="15" /></template>
+        <template #icon><AppIcon name="refresh" :size="14" /></template>
         刷新
       </NButton>
     </PageHeader>
 
-    <!-- ① 健康横幅：一眼看清服务与凭证池状态 -->
-    <div class="banner">
-      <div class="banner-main">
-        <span class="pulse" />
-        <div>
-          <div class="banner-title">网关运行中</div>
-          <div class="sub">
-            已运行 {{ fmtDuration(metrics?.uptime.uptimeMs) }}
-            <template v-if="store.state"> · 存储 {{ store.state.storage === 'persistent' ? 'SQLite 持久化' : '内存' }}</template>
-          </div>
-        </div>
-      </div>
-      <div class="banner-side">
-        <NTag v-if="health" :type="health.type" :bordered="false" size="small">{{ health.text }}</NTag>
-        <NTag v-if="counts" :bordered="false" size="small">{{ counts.keys }} 个客户端 Key</NTag>
-        <NButton v-if="counts && counts.credentials === 0" type="primary" size="small" @click="navigate('credentials')">
-          添加上游凭证
-        </NButton>
-      </div>
-    </div>
-
-    <!-- ② 实时 KPI：4 张主指标，权重一致，趋势线作为背景佐证 -->
-    <section v-if="firstLoad" class="kpis" aria-label="实时指标加载中" aria-busy="true">
-      <div v-for="card in 4" :key="card" class="kpi-skeleton">
-        <NSkeleton text :sharp="false" width="45%" height="12px" />
-        <NSkeleton text :sharp="false" width="65%" height="26px" />
-        <NSkeleton text :sharp="false" width="80%" height="11px" />
+    <!-- ① 读数带：4 个主指标，用发丝竖线分隔，不做卡片。
+         上一版这里是「健康横幅 + 4 张带阴影的卡片」，横幅里的信息
+         （运行时长、存储类型、凭证池状态）已收进顶栏，不再重复。 -->
+    <section v-if="firstLoad" class="stats" aria-label="实时指标加载中" aria-busy="true">
+      <div v-for="card in 4" :key="card" class="stat">
+        <NSkeleton text :sharp="false" width="45%" height="11px" />
+        <NSkeleton text :sharp="false" width="65%" height="24px" style="margin-top: 10px" />
+        <NSkeleton text :sharp="false" width="80%" height="11px" style="margin-top: 8px" />
       </div>
     </section>
 
-    <section v-else class="kpis" aria-label="实时指标">
+    <section v-else class="stats" aria-label="实时指标">
       <StatCard
         label="请求速率"
         :value="num(totals?.lastMinute ?? 0)"
         unit="/min"
         :hint="`最近 60 分钟 ${num(totals?.total ?? 0)} 次`"
-        icon="zap"
         :trend="requestTrend"
       />
       <StatCard
@@ -493,7 +463,6 @@ const recentColumns: DataTableColumns<RequestRecord> = [
         :value="totals?.total ? String(totals.successRate) : '—'"
         unit="%"
         :hint="`失败 ${num(totals?.error ?? 0)} 次`"
-        icon="check"
         :tone="successTone"
         :trend="errorTrend"
       />
@@ -501,7 +470,6 @@ const recentColumns: DataTableColumns<RequestRecord> = [
         label="P95 耗时"
         :value="fmtMs(totals?.p95Ms)"
         :hint="`P50 ${fmtMs(totals?.p50Ms)} · P99 ${fmtMs(totals?.p99Ms)}`"
-        icon="gauge"
         :tone="(totals?.p95Ms ?? 0) > 30_000 ? 'warn' : 'default'"
         :trend="latencyTrend"
       />
@@ -510,13 +478,18 @@ const recentColumns: DataTableColumns<RequestRecord> = [
         :value="totals ? fmtTokens(totals.avgTokensPerMinute) : '—'"
         unit="/min"
         :hint="tokenCoverage"
-        icon="activity"
         tone="info"
         :trend="tokenTrend"
       />
     </section>
 
-    <!-- ③ 实时流量时序 -->
+    <!-- 凭证池为空时给一条可操作的引导 —— 这是唯一需要打断的场景 -->
+    <div v-if="counts && counts.credentials === 0" class="note warn">
+      尚未配置上游凭证，网关无法向上游出网。
+      <NButton text type="primary" size="tiny" @click="navigate('credentials')">去添加</NButton>
+    </div>
+
+    <!-- ② 实时流量时序 -->
     <section class="panel" aria-label="实时流量">
       <div class="panel-head">
         <div class="panel-title">
@@ -528,16 +501,13 @@ const recentColumns: DataTableColumns<RequestRecord> = [
           <span><i class="swatch bad" />失败</span>
         </div>
       </div>
-      <div class="panel-body">
-        <TrafficChart :series="metrics?.series ?? []" :loading="firstLoad" />
-      </div>
+      <TrafficChart :series="metrics?.series ?? []" :loading="firstLoad" />
     </section>
 
-    <!-- ④ 归档层：按日 / 按月的用量统计 -->
+    <!-- ③ 归档层：按日 / 按月的用量统计 -->
     <section class="panel" aria-label="用量统计">
       <div class="panel-head">
         <div class="panel-title">
-          <AppIcon name="calendar" :size="15" />
           用量统计
           <span class="sub">{{ trendGrain === 'month' ? `最近 ${MONTH_RANGE} 个月` : `最近 ${DAY_RANGE} 天` }}</span>
         </div>
@@ -567,61 +537,56 @@ const recentColumns: DataTableColumns<RequestRecord> = [
       </div>
 
       <!-- 先判 firstLoad：否则 enabled 尚未返回时会误报「归档未启用」 -->
-      <div v-if="firstLoad" class="panel-body">
-        <TableSkeleton :widths="[3, 1.2, 1.2, 1.2]" :rows="5" />
-      </div>
+      <TableSkeleton v-if="firstLoad" :widths="[1, 1, 1, 1]" :rows="5" />
 
-      <div v-else-if="!archiveEnabled" class="panel-body">
-        <EmptyState
-          icon="database"
-          title="日/月归档未启用"
-          desc="归档需持久化存储；当前为内存存储，重启后历史不保留。"
-        />
-      </div>
+      <EmptyState
+        v-else-if="!archiveEnabled"
+        icon="database"
+        title="日/月归档未启用"
+        desc="归档需持久化存储；当前为内存存储，重启后历史不保留。"
+      />
 
       <template v-else>
-        <!-- 摘要条：跟随度量切换，读数始终与图表同口径 -->
-        <div v-if="usageSummary" class="summary">
-          <div class="summary-item">
-            <span class="summary-label">今日{{ metricLabel }}</span>
-            <b class="summary-value tnum">{{ usageSummary.today }}</b>
-            <span class="summary-hint">{{ usageSummary.todayDetail }}</span>
+        <!-- 摘要：4 个读数，跟随度量切换，始终与图表同口径 -->
+        <div v-if="usageSummary" class="stats summary-stats">
+          <div class="stat">
+            <div class="stat-k label">今日{{ metricLabel }}</div>
+            <div class="stat-v">{{ usageSummary.today }}</div>
+            <div class="stat-d">{{ usageSummary.todayDetail }}</div>
           </div>
-          <div class="summary-item">
-            <span class="summary-label">昨日{{ metricLabel }}</span>
-            <b class="summary-value tnum muted">{{ usageSummary.yesterday }}</b>
-            <span class="summary-hint" :class="usageSummary.deltaTone">
+          <div class="stat">
+            <div class="stat-k label">昨日{{ metricLabel }}</div>
+            <div class="stat-v muted">{{ usageSummary.yesterday }}</div>
+            <div class="stat-d" :class="usageSummary.deltaTone">
               <AppIcon
                 v-if="usageSummary.deltaTone !== 'flat'"
                 :name="usageSummary.deltaTone === 'up' ? 'arrow-up' : 'arrow-down'"
-                :size="12"
+                :size="11"
               />
               {{ usageSummary.deltaText }}
-            </span>
+            </div>
           </div>
-          <div class="summary-item">
-            <span class="summary-label">本月{{ metricLabel }}</span>
-            <b class="summary-value tnum">{{ usageSummary.month }}</b>
-            <span class="summary-hint">按自然月累计</span>
+          <div class="stat">
+            <div class="stat-k label">本月{{ metricLabel }}</div>
+            <div class="stat-v">{{ usageSummary.month }}</div>
+            <div class="stat-d">按自然月累计</div>
           </div>
-          <div class="summary-item">
-            <span class="summary-label">积分消耗（本月）</span>
-            <b class="summary-value tnum">{{ fmtCredit(history?.months[history.months.length - 1]?.credit) }}</b>
-            <span class="summary-hint">上游未上报积分的不计入</span>
+          <div class="stat">
+            <div class="stat-k label">积分消耗（本月）</div>
+            <div class="stat-v">{{ fmtCredit(history?.months[history.months.length - 1]?.credit) }}</div>
+            <div class="stat-d">上游未上报的不计入</div>
           </div>
         </div>
 
-        <div class="panel-body">
-          <TrendBars
-            :items="trendPoints"
-            :metric="trendMetric"
-            :empty-hint="trendGrain === 'month' ? '最近 12 个月暂无请求' : '最近 30 天暂无请求'"
-          />
-        </div>
+        <TrendBars
+          :items="trendPoints"
+          :metric="trendMetric"
+          :empty-hint="trendGrain === 'month' ? '最近 12 个月暂无请求' : '最近 30 天暂无请求'"
+        />
 
         <div class="table-toggle">
           <NButton quaternary size="tiny" @click="showTable = !showTable">
-            <template #icon><AppIcon :name="showTable ? 'arrow-up' : 'arrow-down'" :size="13" /></template>
+            <template #icon><AppIcon :name="showTable ? 'arrow-up' : 'arrow-down'" :size="12" /></template>
             {{ showTable ? '收起明细' : '查看明细' }}
           </NButton>
           <span class="sub">共 {{ usageRows.length }} 行</span>
@@ -646,39 +611,37 @@ const recentColumns: DataTableColumns<RequestRecord> = [
       </template>
     </section>
 
-    <!-- ⑤ 分布 -->
+    <!-- ④ 分布 -->
     <div class="grid-auto">
       <BreakdownList title="按模型" :stats="metrics?.byModel ?? []" empty-hint="暂无请求记录" :loading="firstLoad" />
       <BreakdownList title="按接口" :stats="metrics?.byPath ?? []" empty-hint="暂无请求记录" :loading="firstLoad" />
     </div>
 
-    <!-- ⑥ 明细 -->
+    <!-- ⑤ 明细：近期错误 + 最近请求 -->
     <div class="grid-auto">
       <section class="panel">
         <div class="panel-head">
           <div class="panel-title">近期错误</div>
           <div class="panel-head-extra">
-            <NButton quaternary size="tiny" @click="navigate('logs')">查看全部日志</NButton>
+            <NButton quaternary size="tiny" @click="navigate('logs')">全部日志</NButton>
           </div>
         </div>
-        <div class="panel-body">
-          <!-- 加载期不能显示「最近 0 次请求均成功」——那是把一个未知状态说成好消息 -->
-          <div v-if="firstLoad" class="errors-skeleton">
-            <NSkeleton v-for="i in 3" :key="i" text :sharp="false" height="13px" />
-          </div>
-          <div v-else-if="(metrics?.recentErrors ?? []).length === 0" class="all-good">
-            <AppIcon name="check" :size="15" />
-            <span>最近 {{ num(metrics?.recent.length ?? 0) }} 次请求均成功</span>
-          </div>
-          <ul v-else class="errors">
-            <li v-for="item in metrics?.recentErrors ?? []" :key="item.at + item.path">
-              <span class="mono tnum time">{{ fmtClock(item.at) }}</span>
-              <NTag size="small" :bordered="false" :type="item.status >= 500 ? 'error' : 'warning'">{{ item.status }}</NTag>
-              <span class="mono path">{{ item.path }}</span>
-              <span class="msg">{{ item.error || '上游返回错误' }}</span>
-            </li>
-          </ul>
+        <!-- 加载期不能显示「最近 0 次请求均成功」——那是把一个未知状态说成好消息 -->
+        <div v-if="firstLoad" class="errors-skeleton">
+          <NSkeleton v-for="i in 3" :key="i" text :sharp="false" height="12px" />
         </div>
+        <div v-else-if="(metrics?.recentErrors ?? []).length === 0" class="all-good">
+          <AppIcon name="check" :size="14" />
+          <span>最近 {{ num(metrics?.recent.length ?? 0) }} 次请求均成功</span>
+        </div>
+        <ul v-else class="errors">
+          <li v-for="item in metrics?.recentErrors ?? []" :key="item.at + item.path">
+            <span class="mono tnum time">{{ fmtClock(item.at) }}</span>
+            <span class="code" :class="item.status >= 500 ? 'bad' : 'warn'">{{ item.status }}</span>
+            <span class="mono path">{{ item.path }}</span>
+            <span class="msg">{{ item.error || '上游返回错误' }}</span>
+          </li>
+        </ul>
       </section>
 
       <section class="panel">
@@ -686,7 +649,7 @@ const recentColumns: DataTableColumns<RequestRecord> = [
           <div class="panel-title">最近请求</div>
         </div>
         <!-- 首屏骨架同样是为了避免「暂无请求记录」在加载期闪现 -->
-        <TableSkeleton v-if="firstLoad" class="panel-body" :widths="[1, 1.4, 0.7, 0.7, 1.2]" :rows="5" />
+        <TableSkeleton v-if="firstLoad" :widths="[1, 1.4, 0.7, 0.7, 1.2]" :rows="5" />
 
         <NDataTable
           v-else
@@ -708,76 +671,32 @@ const recentColumns: DataTableColumns<RequestRecord> = [
 </template>
 
 <style scoped>
-/* ── 健康横幅 ── */
-.banner {
-  display: flex;
+/* 归档摘要：与主读数带同构，但上下留出与图表的间隔 */
+.summary-stats {
+  margin-bottom: 28px;
+}
+
+.stat-v.muted {
+  color: var(--text-2);
+  font-weight: 550;
+}
+
+.stat-d.up {
+  color: var(--ok);
+}
+
+.stat-d.down {
+  color: var(--text-2);
+}
+
+.stat-d.flat {
+  color: var(--text-3);
+}
+
+.stat-d {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 14px 18px;
-  background: linear-gradient(90deg, var(--accent-soft), transparent 58%), var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-}
-
-.banner-main {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.banner-title {
-  font-size: 14.5px;
-  font-weight: 600;
-}
-
-.banner-side {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.pulse {
-  width: 10px;
-  height: 10px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-soft);
-  animation: pulse 2.4s var(--ease) infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 4px var(--accent-soft);
-  }
-  50% {
-    box-shadow: 0 0 0 9px transparent;
-  }
-}
-
-/* ── 实时 KPI ── */
-.kpis {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-}
-
-/* KPI 骨架：外框与 StatCard 保持一致，加载完成时盒子不移动（CLS） */
-.kpi-skeleton {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  background: var(--surface);
-  min-height: 96px;
+  gap: 3px;
 }
 
 /* ── 图例 ── */
@@ -793,79 +712,29 @@ const recentColumns: DataTableColumns<RequestRecord> = [
 }
 
 .swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
+  width: 9px;
+  height: 2px;
 }
 
 .swatch.ok {
-  background: var(--chart-bar-strong);
+  background: var(--chart-bar);
 }
 
 .swatch.bad {
   background: var(--chart-error);
 }
 
-/* ── 用量摘要条 ── */
-.summary {
-  display: grid;
-  gap: 1px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  background: var(--border-soft);
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 13px 16px;
-  background: var(--surface);
-}
-
-.summary-label {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.summary-value {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-
-.summary-value.muted {
-  color: var(--text-2);
-  font-weight: 600;
-}
-
-.summary-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.summary-hint.up {
-  color: var(--accent);
-}
-
-.summary-hint.down {
-  color: var(--text-2);
-}
-
 /* ── 明细表折叠 ── */
 .table-toggle {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 16px 12px;
+  gap: 12px;
+  margin-top: 20px;
 }
 
 .table-wrap {
-  border-top: 1px solid var(--border-soft);
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
 }
 
 /* ── 错误与成功态 ── */
@@ -873,9 +742,9 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 18px 2px;
-  color: var(--accent);
-  font-size: 13px;
+  padding: 18px 0;
+  color: var(--ok);
+  font-size: 12.5px;
 }
 
 /* 与 .errors 的行高节奏对齐，加载完成时内容不跳动 */
@@ -883,7 +752,7 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 16px 2px;
+  padding: 16px 0;
 }
 
 .errors {
@@ -892,7 +761,6 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
   max-height: 260px;
   overflow: auto;
 }
@@ -900,17 +768,42 @@ const recentColumns: DataTableColumns<RequestRecord> = [
 .errors li {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 12.5px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
+}
+
+.errors li:last-child {
+  border-bottom: none;
 }
 
 .time {
   color: var(--text-3);
+  font-size: 11.5px;
+  flex: none;
+}
+
+/* 状态码用颜色 + 数字双重表达，不单靠颜色 */
+.code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 620;
+  flex: none;
+}
+
+.code.bad {
+  color: var(--bad);
+}
+
+.code.warn {
+  color: var(--warn);
 }
 
 .path {
   color: var(--text-2);
+  flex: none;
 }
 
 .msg {
@@ -919,12 +812,5 @@ const recentColumns: DataTableColumns<RequestRecord> = [
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
-}
-
-@media (max-width: 720px) {
-  .banner {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 </style>

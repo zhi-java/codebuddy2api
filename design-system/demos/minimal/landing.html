@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CodeBuddy Gateway · 生产 API 网关</title>
+<!--
+  游客首页（极简版）
+  ─────────────────────────────────────────────────────────────
+  这一页只回答两件事：**这是什么？怎么接？**
+
+  结构自上而下只有三块，再无其他：
+    1. Banner —— 一句话说清产品是什么
+    2. 页签 —— 接入方式 / 模型目录 二选一，不同时占版面
+    3. 页脚 —— 一行入口
+
+  刻意删掉的：
+    · 服务运行状态与数据点（运行时长 / 凭证池 / 模型数）——
+      这些是运维信息，属于控制台，访客不关心，却占了近 200px 高度
+    · 三张协议卡与代码区并列 —— 合并进「接入方式」页签内
+    · 模型网格常驻 —— 收进「模型目录」页签，避免页面被 28 张卡撑长
+
+  模型目录的国内版 / 国际版：国际版**没有内置快照**（见 src/models.ts:853，
+  恒返回空列表，需实时向上游拉取），故国际版页签展示空态说明而非编造数据。
+-->
+<link rel="stylesheet" href="shell.css" />
+<style>
+  /* ── Banner：一句话，不放大标题、不加装饰 ── */
+  .banner {
+    padding: 64px 0 52px;
+    max-width: 660px;
+  }
+  .banner h1 {
+    margin: 0 0 14px;
+    font-size: 27px; font-weight: 620; letter-spacing: -0.035em; line-height: 1.35;
+  }
+  .banner p {
+    margin: 0; font-size: 14px; line-height: 1.75; color: var(--text-3);
+  }
+
+  /* ── 页签：接入方式 / 模型目录 ── */
+  .tabs {
+    display: flex; gap: 22px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 26px;
+  }
+  .tab {
+    position: relative; border: none; background: transparent;
+    padding: 0 0 12px;
+    font-size: 13.5px; font-weight: 550; color: var(--text-3);
+    transition: color 160ms var(--ease);
+  }
+  .tab:hover { color: var(--text); }
+  .tab.on { color: var(--text); font-weight: 620; }
+  .tab.on::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -1px;
+    height: 2px; background: var(--text);
+  }
+  .tab .n { margin-left: 7px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+  .panel { display: none; }
+  .panel.on { display: block; }
+
+  /* ── 接入方式：三行端点，不用卡片 ── */
+  .endpoints { margin-bottom: 26px; }
+  .ep-row {
+    display: flex; align-items: baseline; gap: 16px;
+    padding: 13px 0; border-bottom: 1px solid var(--line);
+  }
+  .ep-row:first-child { border-top: 1px solid var(--line); }
+  .ep-row .name { font-size: 13px; font-weight: 600; flex: none; width: 150px; }
+  .ep-row .path { font-family: var(--mono); font-size: 12px; color: var(--text-2); flex: 1; min-width: 0; }
+  .ep-row .path b { color: var(--accent); font-weight: 620; }
+  .ep-row .auth { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); flex: none; }
+
+  /* ── 代码面板 ── */
+  .code-panel { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .code-head {
+    display: flex; align-items: center; gap: 2px;
+    padding: 6px 8px; border-bottom: 1px solid var(--line);
+  }
+  .code-tab {
+    padding: 5px 11px; border: none; background: transparent;
+    border-radius: var(--radius-sm);
+    font-size: 12px; font-weight: 550; color: var(--text-3);
+    transition: background 150ms var(--ease), color 150ms var(--ease);
+  }
+  .code-tab:hover { color: var(--text); }
+  .code-tab.active { background: var(--bg); color: var(--text); font-weight: 620; }
+  .code-head .copy { margin-left: auto; }
+  .code-view { display: none; padding: 14px 18px; }
+  .code-view.active { display: block; }
+  .code-view pre { margin: 0; overflow-x: auto; }
+  .code-view code {
+    font-family: var(--mono); font-size: 12px; line-height: 1.75;
+    color: var(--text-2); white-space: pre;
+  }
+
+  /* ── 模型目录 ── */
+  .region {
+    display: flex; gap: 2px; margin-bottom: 16px;
+  }
+  .region button {
+    padding: 5px 12px; border: none; background: transparent;
+    border-radius: var(--radius-sm);
+    font-size: 12.5px; font-weight: 550; color: var(--text-3);
+    transition: background 150ms var(--ease), color 150ms var(--ease);
+  }
+  .region button:hover { color: var(--text); }
+  .region button.on { background: var(--bg); color: var(--text); font-weight: 620; }
+
+  .model-grid {
+    display: grid; gap: 1px;
+    grid-template-columns: repeat(auto-fill, minmax(186px, 1fr));
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .model {
+    background: var(--surface); padding: 11px 13px;
+    display: flex; flex-direction: column; gap: 4px; min-width: 0;
+    transition: background 140ms var(--ease);
+  }
+  .model:hover { background: var(--bg); }
+  .model .nm { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model .id { font-family: var(--mono); font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model .meta { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 3px; }
+  .model .cr { font-family: var(--mono); font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .model .ctx { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+
+  @media (max-width: 640px) {
+    .banner { padding: 40px 0 34px; }
+    .banner h1 { font-size: 21px; }
+    .model-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .ep-row { flex-wrap: wrap; gap: 6px 14px; }
+    .ep-row .name { width: 100%; }
+    .ep-row .auth { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<nav class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="landing.html">
+      <i><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></i>
+      <b>CodeBuddy Gateway</b>
+    </a>
+    <div style="flex:1"></div>
+    <div class="topbar-right">
+      <a class="btn" href="index.html">管理控制台</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <!-- ① Banner：一句话 -->
+  <section class="banner">
+    <h1>一套上游凭证，接入任意主流客户端。</h1>
+    <p>把 CodeBuddy 上游转成 OpenAI、Anthropic、Responses 三种标准协议，客户端零改动即可接入。</p>
+  </section>
+
+  <!-- ② 页签：接入方式 / 模型目录 -->
+  <div class="tabs" role="tablist">
+    <button class="tab on" data-t="api" role="tab" aria-selected="true">接入方式</button>
+    <button class="tab" data-t="models" role="tab" aria-selected="false">模型目录 <span class="n" id="tab-n">28</span></button>
+  </div>
+
+  <!-- 面板一：接入方式 -->
+  <section class="panel on" data-p="api" role="tabpanel">
+    <div class="endpoints">
+      <div class="ep-row">
+        <span class="name">Chat Completions</span>
+        <span class="path"><b>POST</b> /v1/chat/completions</span>
+        <span class="auth">Authorization: Bearer</span>
+      </div>
+      <div class="ep-row">
+        <span class="name">Messages</span>
+        <span class="path"><b>POST</b> /v1/messages</span>
+        <span class="auth">x-api-key</span>
+      </div>
+      <div class="ep-row">
+        <span class="name">Responses</span>
+        <span class="path"><b>POST</b> /v1/responses</span>
+        <span class="auth">Authorization: Bearer</span>
+      </div>
+    </div>
+
+    <div class="code-panel">
+      <div class="code-head">
+        <button class="code-tab active" data-c="0">Chat Completions</button>
+        <button class="code-tab" data-c="1">Messages</button>
+        <button class="code-tab" data-c="2">Responses</button>
+        <button class="btn btn-sm copy" id="copy">复制</button>
+      </div>
+      <div id="views"></div>
+    </div>
+  </section>
+
+  <!-- 面板二：模型目录 -->
+  <section class="panel" data-p="models" role="tabpanel">
+    <div class="region" id="region">
+      <button class="on" data-r="cn">国内版</button>
+      <button data-r="intl">国际版</button>
+    </div>
+    <div id="model-host"></div>
+  </section>
+</main>
+
+<footer style="border-top:1px solid var(--line)">
+  <div class="topbar-inner" style="height:auto;padding-top:20px;padding-bottom:20px;gap:18px">
+    <span class="sub">CodeBuddy Gateway</span>
+    <a class="btn-text" href="index.html">管理控制台</a>
+    <a class="btn-text" href="#" id="foot-models">模型目录</a>
+    <span class="sub" style="margin-left:auto">检查时间 2026-10-12 18:54</span>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+<script>
+/* ═══════════ 真实模型数据（取自 src/models.ts 内置快照，仅国内版） ═══════════
+   国际版无内置快照：src/models.ts:853 对 intl 恒返回空列表，需实时向上游拉取。 */
+const CN_MODELS = [
+  ['Default',                'default',               '2.00', '200K'],
+  ['Deepseek-V4-Pro',        'deepseek-v4-pro',       '0.51', '1M'],
+  ['Deepseek-V4-Flash',      'deepseek-v4-flash',     '0.17', '1M'],
+  ['DeepSeek-V3.2',          'deepseek-v3-2-volc',    '0.29', '96K'],
+  ['MiniMax-M3',             'minimax-m3',            '0.25', '512K'],
+  ['MiniMax-M2.7',           'minimax-m2.7',          '0.19', '200K'],
+  ['MiniMax-M2.5',           'minimax-m2.5',          '0.18', '200K'],
+  ['GLM-5.3',                'glm-5.3',               '0.79', '1M'],
+  ['GLM-5.3-Flash',          'glm-5.3-flash',         '0.06', '1M'],
+  ['GLM-5.2',                'glm-5.2',               '0.79', '1M'],
+  ['GLM-5.1',                'glm-5.1',               '0.79', '200K'],
+  ['GLM-5.0',                'glm-5.0',               '0.80', '200K'],
+  ['GLM-5.0-Turbo',          'glm-5.0-turbo',         '0.95', '200K'],
+  ['GLM-5v-Turbo',           'glm-5v-turbo',          '0.71', '200K'],
+  ['GLM-4.7',                'glm-4.7',               '0.23', '200K'],
+  ['GLM-4.6',                'glm-4.6',               '0.23', '168K'],
+  ['GLM-4.6V',               'glm-4.6v',              '0.11', '128K'],
+  ['Kimi-K3',                'kimi-k3-1',             '1.62', '1M'],
+  ['Kimi-K2.7-Code',         'kimi-k2.7',             '0.57', '256K'],
+  ['Kimi-K2.6',              'kimi-k2.6',             '0.52', '256K'],
+  ['Kimi-K2.5',              'kimi-k2.5',             '0.45', '164K'],
+  ['Kimi-K2-Thinking',       'kimi-k2-thinking',      '0.54', '164K'],
+  ['Hy4 preview',            'hy4-preview',           '0.00', '1M'],
+  ['Hy4 preview',            'hy4-preview-x',         '0.29', '1M'],
+  ['Hy3',                    'hy3',                   '0.00', '192K'],
+  ['Hy3',                    'hy3-x',                 '0.05', '192K'],
+  ['Hunyuan-Turbos',         'hunyuan-chat',          '0.10', '200K'],
+  ['Hunyuan-Image-v3.0-art', 'hunyuan-image-v3.0-art','5.00', '—'],
+];
+
+const modelHost = document.getElementById('model-host');
+let currentRegion = 'cn';
+
+function renderModels(region) {
+  currentRegion = region;
+  if (region === 'intl') {
+    // 国际版确实没有内置目录，如实说明并给出下一步，而不是画一个空网格
+    modelHost.innerHTML = `
+      <div class="empty">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
+        <b>国际版目录需实时拉取</b>
+        <span>国际版没有内置快照，需在管理控制台添加国际版上游凭证后，由网关实时向上游获取。</span>
+      </div>`;
+    document.getElementById('tab-n').textContent = '—';
+    return;
+  }
+  modelHost.innerHTML = `<div class="model-grid">${CN_MODELS.map(([nm, id, cr, ctx]) => `
+    <div class="model">
+      <div class="nm" title="${nm}">${nm}</div>
+      <div class="id" title="${id}">${id}</div>
+      <div class="meta"><span class="cr">x${cr}</span><span class="ctx">${ctx}</span></div>
+    </div>`).join('')}</div>`;
+  document.getElementById('tab-n').textContent = CN_MODELS.length;
+}
+
+document.getElementById('region').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-r]');
+  if (!b) return;
+  document.querySelectorAll('#region button').forEach((x) => x.classList.toggle('on', x === b));
+  renderModels(b.dataset.r);
+});
+
+/* ═══════════ 顶层页签切换 ═══════════ */
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t) => {
+    const on = t.dataset.t === name;
+    t.classList.toggle('on', on);
+    t.setAttribute('aria-selected', String(on));
+  });
+  document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('on', p.dataset.p === name));
+}
+document.querySelector('.tabs').addEventListener('click', (e) => {
+  const t = e.target.closest('.tab');
+  if (t) showTab(t.dataset.t);
+});
+// 页脚「模型目录」直接落到对应页签，而不是重新加载页面
+document.getElementById('foot-models').addEventListener('click', (e) => {
+  e.preventDefault();
+  showTab('models');
+  document.querySelector('.tabs').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+/* ═══════════ 三协议 curl 示例 ═══════════ */
+const BASE = location.origin.replace(/\/$/, '');
+const SAMPLE = 'deepseek-v4-pro';
+
+const PROTOCOLS = [
+  { path: '/v1/chat/completions', header: '  -H "Authorization: Bearer $GATEWAY_KEY"',
+    body: `{"model":"${SAMPLE}","messages":[{"role":"user","content":"hi"}]}` },
+  { path: '/v1/messages', header: '  -H "x-api-key: $GATEWAY_KEY"',
+    body: `{"model":"${SAMPLE}","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}` },
+  { path: '/v1/responses', header: '  -H "Authorization: Bearer $GATEWAY_KEY"',
+    body: `{"model":"${SAMPLE}","input":"hi"}` },
+];
+
+/* curl 折行：除末行外每行以 \ 结尾，否则复制出去是几条独立命令 */
+function sample(p) {
+  return [
+    `curl POST "${BASE}${p.path}" \\`,
+    p.header + ' \\',
+    '  -H "content-type: application/json" \\',
+    `  -d '${p.body}'`,
+  ].join('\n');
+}
+
+document.getElementById('views').innerHTML = PROTOCOLS.map((p, i) => `
+  <div class="code-view${i === 0 ? ' active' : ''}" data-c="${i}">
+    <pre><code>${sample(p)}</code></pre>
+  </div>`).join('');
+
+document.querySelector('.code-head').addEventListener('click', (e) => {
+  const tab = e.target.closest('.code-tab');
+  if (!tab) return;
+  document.querySelectorAll('.code-tab').forEach((t) => t.classList.toggle('active', t === tab));
+  document.querySelectorAll('.code-view').forEach((v) => v.classList.toggle('active', v.dataset.c === tab.dataset.c));
+});
+
+document.getElementById('copy').addEventListener('click', () => {
+  const active = document.querySelector('.code-view.active code').textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(active).then(
+      () => toast('已复制调用示例'),
+      () => toast('复制失败，请手动选择'),
+    );
+  } else {
+    toast('当前环境不支持自动复制');
+  }
+});
+
+renderModels('cn');
+</script>
+</body>
+</html>

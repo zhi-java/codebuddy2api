@@ -10,7 +10,7 @@ import { NInput, NModal, useMessage } from 'naive-ui';
 import AppIcon from './AppIcon.vue';
 import { ROUTES, navigate } from '../router';
 import { refreshNow } from '../autoRefresh';
-import { writeClipboard } from '../clipboard';
+import { copyText } from '../clipboard';
 
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits<{ (event: 'update:show', value: boolean): void }>();
@@ -34,7 +34,7 @@ const commands = computed<Command[]>(() => [
   ...ROUTES.map((item) => ({
     id: `nav:${item.name}`,
     label: `前往 ${item.label}`,
-    hint: item.group,
+    hint: '视图',
     icon: item.icon,
     run: () => navigate(item.name),
   })),
@@ -50,10 +50,11 @@ const commands = computed<Command[]>(() => [
     label: '复制网关 Base URL',
     hint: '动作',
     icon: 'link',
-    run: () => {
-      // 用统一封装：明文 HTTP 下 navigator.clipboard 不存在，
-      // 直接调用会静默失败（这里原先的 .catch 正是把失败吞掉了）
-      if (!writeClipboard(`${window.location.origin}/v1`)) message.error('复制失败，请手动选中文本');
+    run: async () => {
+      // 用统一封装并 await 真实结果：明文 HTTP 下 navigator.clipboard 可能
+      // 「存在但拒绝」，乐观返回 true 会谎报成功（这里原先的 .catch 正是把失败吞掉了）
+      const ok = await copyText(`${window.location.origin}/v1`);
+      if (!ok) message.error('复制失败，请手动选中文本');
     },
   },
   {
@@ -171,7 +172,7 @@ function onKeydown(event: KeyboardEvent): void {
   width: min(560px, calc(100vw - 32px));
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
   overflow: hidden;
   /* 浅色下浮层靠阴影托起（原深色用的 rgba(2,6,23,.75) 在浅底上是一团脏影） */
   box-shadow: var(--shadow-pop);
@@ -206,9 +207,9 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 .item.active {
-  background: var(--accent-soft);
+  background: var(--surface-2);
   color: var(--text);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 var(--text);
 }
 
 .item.active .hint {

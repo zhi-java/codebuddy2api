@@ -247,7 +247,13 @@ export default {
     // ── GET / — 品牌落地页;GET /health — 纯 JSON 健康检查 ────────────
     if (request.method === 'GET') {
       if (path === '/') {
-        return htmlResponse(renderLandingPage(await buildLandingStatus(env)));
+        // 模型目录已并入落地页的页签（原 /v1/models 浏览页）。该页签需要实时
+        // 向上游拉目录，故只在真的切到它时才拉 —— 首页不该为它阻塞。
+        const wantModels = url.searchParams.get('tab') === 'models';
+        const region: Region = url.searchParams.get('region') === 'intl' ? 'intl' : 'cn';
+        const status = await buildLandingStatus(env);
+        const models = wantModels ? await resolveBrowserModelsList(env, region) : null;
+        return htmlResponse(renderLandingPage(status, models, region));
       }
       if (path === '/health') {
         if (wantsHtml(request)) {
@@ -1154,7 +1160,7 @@ function logChatRequestShape(
 /** 可读化的上游错误文案 */
 function describeUpstreamError(status: number): string {
   if (status === 400) {
-    return '上游拒绝了请求(HTTP 400)。常见原因:max_tokens 超过模型输出上限、请求含上游不接受的字段、上下文超出窗口、或模型不可用。可尝试:换用更大窗口模型、减小 max_tokens、或在管理台「试跑」用同模型复现。';
+    return '上游拒绝了请求(HTTP 400)。常见原因:max_tokens 超过模型输出上限、请求含上游不接受的字段、上下文超出窗口、或模型不可用。可尝试:换用更大窗口模型、减小 max_tokens、或在管理台「对话」用同模型复现。';
   }
   if (status === 401 || status === 403) {
     return `上游鉴权失败(HTTP ${status}),请检查该凭证是否仍然有效(管理台可「测试/刷新」)。`;

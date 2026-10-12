@@ -71,7 +71,7 @@ export interface DataResponse<T> {
 }
 
 /**
- * 流式试跑:读取 SSE 并逐事件回调。
+ * 流式对话:读取 SSE 并逐事件回调。
  *
  * 用 fetch + ReadableStream 而非 EventSource —— 需要 POST 请求体与中途取消。
  */

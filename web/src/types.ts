@@ -256,7 +256,7 @@ export interface CheckinStatus {
   claimBlockedReason?: string;
 }
 
-/** 试跑会话中的一条消息(前端本地维护) */
+/** 对话会话中的一条消息(前端本地维护) */
 export interface PlaygroundMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -268,7 +268,7 @@ export interface PlaygroundMessage {
   error?: string;
 }
 
-/** 流式试跑的事件(与后端 handleChatTestStream 对齐) */
+/** 流式对话的事件(与后端 handleChatTestStream 对齐) */
 export type ChatStreamEvent =
   | { type: 'reasoning'; delta: string }
   | { type: 'content'; delta: string }

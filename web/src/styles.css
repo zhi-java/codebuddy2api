@@ -1,12 +1,19 @@
 /**
  * 页面级基元与共享布局工具类。
  *
- * 设计令牌集中在 tokens.css（唯一事实源，浅色）。这里只定义：
+ * 设计令牌集中在 tokens.css（唯一事实源，浅色极简）。这里只定义：
  *   - html/body 基础排版与字体栈
- *   - 全局工具类（.page / .stack / .panel / .sub 等），供各视图复用
+ *   - 全局工具类（.page / .section / .panel / .label / .st 等），供各视图复用
  *   - 无障碍：可见焦点环、reduced-motion
  *
  * 组件外观由 Naive UI 主题接管（见 theme.ts），此处不重复定义组件样式。
+ *
+ * ── 极简口径下与上一版的差别 ────────────────────────────────────────
+ *   · 层次从「阴影 + 卡片」改为「发丝线 + 留白」：.panel 不再有外框与圆角，
+ *     只有一条上发丝线 + 标题
+ *   · 新增 .label（小号大写 + 字距）与 .st（圆点 + 文字状态），
+ *     取代上一版的彩色胶囊标签
+ *   · 间距节奏统一到 40px 区块间距、28px 页边距
  */
 
 * {
@@ -25,9 +32,8 @@ body {
   background: var(--bg);
   color: var(--text);
   /* 'Inter Variable' 由 fonts.css 自托管（latin 子集），中文按 unicode-range 自动回退 */
-  font: 14px/1.5 'Inter Variable', Inter, ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'tnum';
+  font: 13px/1.6 var(--sans);
+  font-feature-settings: 'tnum';
   -webkit-font-smoothing: antialiased;
 }
 
@@ -53,7 +59,7 @@ a,
 /* ── 文本工具类 ─────────────────────────────────────────────────────────── */
 
 .mono {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-variant-ligatures: none;
 }
 
@@ -64,7 +70,7 @@ a,
 }
 
 .good {
-  color: var(--accent);
+  color: var(--ok);
 }
 
 .warn {
@@ -72,7 +78,7 @@ a,
 }
 
 .bad {
-  color: var(--danger);
+  color: var(--bad);
 }
 
 /* 数字对齐：KPI、表格数值列 */
@@ -80,22 +86,76 @@ a,
   font-variant-numeric: tabular-nums;
 }
 
+/**
+ * 标签：小号大写 + 字距。
+ *
+ * 极简下不用背景色块区分标签，只用字重与颜色 —— 彩色胶囊在密集表格里
+ * 会把视线从数据本身抢走，而标签恰恰是次要信息。
+ */
+.label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/**
+ * 状态：一个圆点 + 文字。
+ *
+ * 取代上一版的彩色底 + 描边 + 圆角胶囊三重装饰。状态色只在圆点上出现，
+ * 文字保持中性色，避免整行被染色。
+ */
+.st {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.st > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+}
+
+.st.ok > i {
+  background: var(--ok);
+}
+
+.st.warn > i {
+  background: var(--warn);
+}
+
+.st.bad > i {
+  background: var(--bad);
+}
+
+/* 类型标记：等宽小字，无背景 */
+.kind {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
 /* ── 布局基元 ───────────────────────────────────────────────────────────── */
 
-/* 页面级滚动容器 */
-/* 内容宽度与内衬：顶栏与 .page 共用这两个令牌 */
+/* 内容宽度与内衬：顶栏与页面共用这两个令牌 */
 :root {
-  --content-max: 1280px;
-  --content-gutter: 20px;
+  --content-max: 1180px;
+  --content-gutter: 28px;
 }
 
 /**
  * 内容容器宽度规则（顶栏与页面共用同一条规则，而非各写一套）。
  *
- * 关键点：max-width 只在**视口足够宽**时才生效。控制台里 .topbar 的父容器
- * 已被侧栏占去 224px，可用宽度常小于 --content-max，此时 max-width 不触发、
- * margin:auto 也无从居中——所以两边宽度不同、左边缘必然错位（实测差 22px）。
- * 让顶栏内层与 .page 套用同一个类，是唯一能保证一致的做法。
+ * 关键点：max-width 只在**视口足够宽**时才生效。控制台里顶栏的父容器
+ * 已被侧栏占去宽度，可用宽度常小于 --content-max，此时 max-width 不触发、
+ * margin:auto 也无从居中——所以两边必须套用同一个类，否则左边缘必然错位。
  */
 .page-shell,
 .page {
@@ -106,18 +166,39 @@ a,
   padding-right: var(--content-gutter);
 }
 
-/* 纵向节奏：视图内部按区块堆叠时统一用 16px 间距 */
+/* 页面纵向节奏：区块之间统一 40px，靠留白建立层次 */
 .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+.section {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-/* 自适应栅格：卡片组、双栏区块 */
+/* 区块头：标题 + 右侧操作 */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 640;
+}
+
+/* 自适应栅格：读数带、双栏区块 */
 .grid-auto {
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 40px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   align-items: start;
 }
 
@@ -125,55 +206,156 @@ a,
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
   flex-wrap: wrap;
 }
 
-/* ── 面板 ───────────────────────────────────────────────────────────────── */
+/* ── 读数带（KPI）─────────────────────────────────────────────────────────
+ * 极简做法：不做卡片，用发丝竖线分隔。一屏内读数不超过 6 个。 */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
 
-/* 面板：浅色下层次的主力是阴影，描边只作兜底。
-   此前 .panel 无阴影、只有 1.16:1 的淡边，在浅色底上几乎看不出边界。 */
+.stat {
+  padding: 0 24px;
+  border-left: 1px solid var(--line);
+}
+
+.stat:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.stat-k {
+  margin-bottom: 8px;
+}
+
+.stat-v {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-v small {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  margin-left: 4px;
+  letter-spacing: 0;
+}
+
+.stat-d {
+  margin-top: 7px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* ── 面板 ─────────────────────────────────────────────────────────────────
+ * 极简下面板只有一条上发丝线 + 标题，没有外框、没有圆角、没有阴影。 */
 .panel {
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
 }
 
 .panel-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
   flex-wrap: wrap;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 16px;
 }
 
 .panel-head.plain {
-  border-bottom: none;
-  padding-bottom: 0;
+  margin-bottom: 0;
 }
 
 .panel-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 640;
   min-width: 0;
 }
 
 .panel-head-extra {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
-/* 窄屏下面板头的操作区独占一行，内部输入框拉满——这是面板头的布局职责，
-   放在全局定义里，各视图不必重复声明 */
+.panel-body {
+  padding-top: 4px;
+}
+
+/* 面板内的分区说明 */
+.panel-note {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 需要明确边界的块（表单、抽屉内）才用外框 */
+.box {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+/* ── 提示条 ───────────────────────────────────────────────────────────────
+ * 极简下提示条不上背景色，只用左侧一条 2px 线。 */
+.note {
+  border-left: 2px solid var(--line-strong);
+  padding: 2px 0 2px 14px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+.note.warn {
+  border-left-color: var(--warn);
+  color: var(--warn);
+}
+
+.note.bad {
+  border-left-color: var(--bad);
+  color: var(--bad);
+}
+
+/* ── 表格基元 ─────────────────────────────────────────────────────────────
+ * Naive DataTable 的具体取值在 theme.ts；这里放自绘表格与通用单元格样式。 */
+.cell-main {
+  font-weight: 550;
+  color: var(--text);
+}
+
+.cell-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* 行内操作：默认隐形，悬停浮现，避免表格被按钮塞满 */
+.row-acts {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity 150ms var(--ease);
+}
+
+tr:hover .row-acts,
+tr:focus-within .row-acts {
+  opacity: 1;
+}
+
+/* 窄屏下面板头的操作区独占一行，内部输入框拉满 */
 @media (max-width: 900px) {
   .panel-head-extra {
     width: 100%;
@@ -184,16 +366,22 @@ a,
   }
 }
 
-.panel-body {
-  padding: 14px 16px 16px;
-}
+/* 窄屏读数带：单列，用横线分隔 */
+@media (max-width: 640px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
 
-/* 面板内的分区说明：紧跟在 panel-head 之后时贴齐左侧 */
-.panel-note {
-  padding: 0 16px 12px;
-  color: var(--text-3);
-  font-size: 12px;
-  line-height: 1.7;
+  .stat {
+    padding: 0;
+    border-left: none;
+  }
+
+  .stat + .stat {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

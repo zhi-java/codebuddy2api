@@ -1,54 +1,52 @@
 <script setup lang="ts">
 /**
- * 空态：图标 + 标题 + 说明 + 可选操作按钮。
- * 三个层次都是真实项目里必要的：解释「为什么空」并给出下一步。
+ * 空态：一个淡图标 + 标题 + 说明 + 可选操作。
+ *
+ * 极简口径：图标用发丝线色（不抢视线），文案保持两行以内。
  */
 import AppIcon from './AppIcon.vue';
 
-withDefaults(defineProps<{ icon?: string; title: string; desc?: string }>(), { icon: 'inbox' });
+defineProps<{ icon: string; title: string; desc?: string }>();
 </script>
 
 <template>
   <div class="empty">
-    <div class="ico"><AppIcon :name="icon" :size="22" /></div>
-    <div class="title">{{ title }}</div>
-    <p v-if="desc">{{ desc }}</p>
-    <div class="action"><slot /></div>
+    <AppIcon :name="icon" :size="26" />
+    <b>{{ title }}</b>
+    <span v-if="desc">{{ desc }}</span>
+    <div v-if="$slots.default" class="act"><slot /></div>
   </div>
 </template>
 
 <style scoped>
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 64px 20px;
   text-align: center;
-  padding: 40px 20px;
   color: var(--text-3);
 }
 
-.ico {
-  display: inline-grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: var(--surface-3);
+.empty :deep(svg) {
+  color: var(--line-strong);
+}
+
+b {
   color: var(--text-2);
-  margin-bottom: 12px;
-}
-
-.title {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
-  color: var(--text);
 }
 
-p {
-  margin: 6px auto 0;
-  max-width: 46ch;
+span {
   font-size: 12.5px;
+  max-width: 380px;
   line-height: 1.7;
 }
 
-.action:not(:empty) {
-  margin-top: 14px;
+.act {
+  margin-top: 6px;
 }
 </style>

@@ -642,7 +642,7 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
     return handleTest(request, env);
   }
 
-  // ── Chat 试跑:真实对话验证(聚合返回文本) ─────────────────────────
+  // ── Chat 对话:真实对话验证(聚合返回文本) ─────────────────────────
   if (path === '/admin/api/chat-test' && request.method === 'POST') {
     return handleChatTest(request, env);
   }
@@ -785,7 +785,7 @@ async function handleTest(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * Chat 试跑:用所选凭证真实对话一次(上游仅支持流式,内部聚合),
+ * Chat 对话:用所选凭证真实对话一次(上游仅支持流式,内部聚合),
  * 返回完整文本/推理/用量,供管理台「试跑」视图展示。
  */
 /**
@@ -852,7 +852,7 @@ async function handleChatTestStream(request: Request, env: Env): Promise<Respons
   } catch (err: unknown) {
     clearTimeout(timeoutId);
     const message = err instanceof Error ? err.message : String(err);
-    await markCredentialFailure(credentialId, `试跑失败:${message}`, env).catch(() => undefined);
+    await markCredentialFailure(credentialId, `对话失败:${message}`, env).catch(() => undefined);
     return jsonResponse({ error: 'Chat test failed', message }, env, 502);
   }
 
@@ -863,7 +863,7 @@ async function handleChatTestStream(request: Request, env: Env): Promise<Respons
     if (CHANNEL_FAULT_STATUSES.has(upstream.status)) {
       await markCredentialFailure(
         credentialId,
-        `试跑失败:上游 HTTP ${upstream.status}`,
+        `对话失败:上游 HTTP ${upstream.status}`,
         env,
       ).catch(() => undefined);
     }
@@ -997,7 +997,7 @@ async function handleChatTest(request: Request, env: Env): Promise<Response> {  
       if (CHANNEL_FAULT_STATUSES.has(response.status)) {
         await markCredentialFailure(
           credentialId,
-          `试跑失败:上游 HTTP ${response.status}`,
+          `对话失败:上游 HTTP ${response.status}`,
           env,
         ).catch(() => undefined);
       }
