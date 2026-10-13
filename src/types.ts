@@ -112,12 +112,24 @@ export interface KeyUsage {
 
 /**
  * 网关自建 API key 记录。
- * 明文只在创建时返回一次，库中仅保留 SHA-256 哈希。
+ *
+ * 鉴权走 keyHash（SHA-256），网关从不拿哈希反推明文。
+ * keyCipher 是明文的 AES-GCM 密文，**仅用于「随时复制」**——
+ * 与上游凭证同一套加密机制、同一个 CREDENTIALS_ENC_SECRET，零新增密钥。
+ *
+ * 为什么不存明文：网关一旦持有可读密钥，一次泄露即等于全部 Key 失效，
+ * 而加密存储的成本接近于零（加解密函数已存在，UX 完全相同）。
+ * 存量 Key（仅哈希、无 keyCipher）仍可正常鉴权，只是无法回显明文。
  */
 export interface ClientKey {
   id: string;
   name: string;
   keyHash: string;
+  /**
+   * 明文的 AES-GCM 密文，供控制台回显与复制。
+   * 未设置 = 存量 Key（加密存储上线前创建），无法回显明文。
+   */
+  keyCipher?: string;
   /** 绑定的上游凭证 ID（多对多） */
   credentialIds: string[];
   enabled: boolean;

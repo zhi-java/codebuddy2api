@@ -124,6 +124,20 @@
   assert.match(key.data.plaintext, /^sk-cb-/);
   assert.equal(key.data.keyHash, undefined);
 
+  // 列表回显明文：控制台据此支持「随时复制」，而不是只在创建那一次能复制。
+  // 明文以 AES-GCM 密文落盘（keyCipher），鉴权仍只走 keyHash。
+  const listed = await (await handleAdmin(
+    adminReq('/admin/api/keys', null, 'GET', auth), adminEnv, '/admin/api/keys',
+  )).json();
+  assert.equal(listed.data.length, 1);
+  assert.equal(
+    listed.data[0].plaintext, key.data.plaintext,
+    '列表应回显与创建时一致的明文',
+  );
+  // 明文只在响应里出现，密文与哈希都不得外泄
+  assert.equal(listed.data[0].keyCipher, undefined, '密文不应下发');
+  assert.equal(listed.data[0].keyHash, undefined, '哈希不应下发');
+
   const state = await (await handleAdmin(adminReq('/admin/api/state', null, 'GET', auth), adminEnv, '/admin/api/state')).json();
   assert.equal(state.counts.credentials, 1);
   assert.equal(state.counts.keys, 1);

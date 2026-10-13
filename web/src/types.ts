@@ -67,6 +67,11 @@ export interface KeySummary {
   quota: KeyQuota;
   /** 当前用量快照（服务端随列表一起返回，免去前端逐 Key 再请求） */
   usage: KeyUsage;
+  /**
+   * 明文（服务端解密后随列表返回），供「随时复制」。
+   * 空串表示无法回显：加密存储上线前的存量 Key，或加密密钥已轮换。
+   */
+  plaintext: string;
 }
 
 export interface GatewayState {

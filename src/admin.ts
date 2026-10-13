@@ -5,7 +5,7 @@
  * 不占用 KV 存储。所有写接口额外校验 Origin 同站，防止 CSRF。
  */
 
-import { generateApiKey, randomId, signSession, timingSafeEqual, verifySession } from './crypto';
+import { decryptSecret, encryptSecret, generateApiKey, randomId, signSession, timingSafeEqual, verifySession } from './crypto';
 import {
   CHANNEL_FAULT_STATUSES,
   ensureValidToken,
@@ -539,7 +539,15 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
   // ── 客户端 key ──────────────────────────────────────────────
   if (path === '/admin/api/keys' && request.method === 'GET') {
     const keys = await store.listKeys();
-    return jsonResponse({ data: keys.map(summarizeKey) }, env);
+    // 列表带上明文，供「随时复制」。解不开（存量 Key 无密文 / 密钥已换）
+    // 时留空，前端据此显示「不可回显」而不是报错。
+    const data = await Promise.all(
+      keys.map(async (key) => ({
+        ...summarizeKey(key),
+        plaintext: await revealKeyPlaintext(key, env),
+      })),
+    );
+    return jsonResponse({ data }, env);
   }
 
   if (path === '/admin/api/keys' && request.method === 'POST') {
@@ -550,6 +558,8 @@ async function handleAdminApi(request: Request, env: Env, path: string): Promise
       id: randomId('key'),
       name: String(body.name ?? '未命名 Key'),
       keyHash: await hashApiKey(plaintext),
+      // 明文密文留存，供控制台「随时复制」。鉴权仍只走 keyHash。
+      keyCipher: await encryptSecret(plaintext, env.CREDENTIALS_ENC_SECRET),
       credentialIds: Array.isArray(body.credentialIds)
         ? body.credentialIds.filter((v): v is string => typeof v === 'string')
         : [],
@@ -1104,6 +1114,24 @@ function summarizeCredential(credential: Credential) {
     hasAccessToken: Boolean(credential.accessToken),
     hasRefreshToken: Boolean(credential.refreshToken),
   };
+}
+
+/**
+ * 解出 Key 的明文，失败返回空串。
+ *
+ * 三种情况都会解不开，都不算错误、只是「无法回显」：
+ *   1. 存量 Key —— 加密存储上线前创建，库里只有哈希，没有 keyCipher；
+ *   2. CREDENTIALS_ENC_SECRET 被轮换过；
+ *   3. 密文损坏。
+ * 返回空串让前端显示提示，而不是抛错中断整个列表。
+ */
+async function revealKeyPlaintext(key: ClientKey, env: Env): Promise<string> {
+  if (!key.keyCipher) return '';
+  try {
+    return await decryptSecret(key.keyCipher, env.CREDENTIALS_ENC_SECRET);
+  } catch {
+    return '';
+  }
 }
 
 function summarizeKey(key: ClientKey) {

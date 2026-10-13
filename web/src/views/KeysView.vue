@@ -48,6 +48,9 @@ const keyword = ref('');
 const busyId = ref('');
 
 const secret = ref<{ name: string; plaintext: string } | null>(null);
+/** 列表复制失败时的兜底弹窗 */
+const showManualCopy = ref(false);
+const manualCopy = ref<{ name: string; plaintext: string } | null>(null);
 
 /** 编辑弹窗：一次承载全部可改项，避免为每个字段开一个弹窗 */
 const showEdit = ref(false);
@@ -398,6 +401,21 @@ async function copyKeyPlaintext(): Promise<void> {
   }
 }
 
+/**
+ * 复制列表里某个 Key 的明文（明文由服务端解密随列表下发）。
+ *
+ * 复制失败时把明文放进一个自动全选的只读输入框并弹出 —— 列表里的明文
+ * 不像创建弹窗那样有现成的输入框可全选，若不兜底，用户就只能看到
+ * 一句「复制失败」而拿不到值。弹窗形式保证任何环境下都能手动取走。
+ */
+async function copyKey(key: KeySummary): Promise<void> {
+  if (!key.plaintext) return;
+  const ok = await copy(key.plaintext, `已复制 ${key.name} 的 Key`);
+  if (ok) return;
+  manualCopy.value = { name: key.name, plaintext: key.plaintext };
+  showManualCopy.value = true;
+}
+
 function onSecretModalToggle(show: boolean): void {
   if (show || !secret.value) return;
   dialog.warning({
@@ -614,6 +632,17 @@ onMounted(() => {
 
           <!-- 操作：常显（可见性优先于版面清爽，见 styles.css 的 .row-acts） -->
           <div class="row-acts">
+            <!-- 复制：明文由服务端解密随列表下发。存量 Key 无密文时 disabled，
+                 用 title 说明原因，而不是给一个点了没反应的按钮。 -->
+            <NButton
+              size="tiny"
+              quaternary
+              :disabled="!key.plaintext"
+              :title="key.plaintext ? '复制该 Key 的明文' : '该 Key 创建于加密存储之前，无法回显明文；可重置密钥后获得新明文'"
+              @click="copyKey(key)"
+            >
+              复制
+            </NButton>
             <NButton size="tiny" quaternary :loading="busyId === key.id" @click="openEdit(key)">编辑</NButton>
             <NButton size="tiny" quaternary @click="openAlias(key)">别名</NButton>
             <NDropdown
@@ -889,6 +918,33 @@ onMounted(() => {
         </NButton>
       </div>
     </NModal>
+
+    <!-- 复制失败兜底：把明文放进自动全选的只读输入框，任何环境下都能手动取走 -->
+    <NModal
+      v-model:show="showManualCopy"
+      preset="card"
+      title="手动复制"
+      style="width: min(640px, calc(100vw - 32px))"
+      @after-leave="manualCopy = null"
+    >
+      <div class="sub" style="margin-bottom: 12px">
+        自动复制在当前环境不可用（常见于局域网明文 HTTP）。点下方输入框已自动全选，
+        按 Ctrl/Cmd + C 即可复制。
+      </div>
+      <input
+        class="secret mono"
+        readonly
+        :value="manualCopy?.plaintext ?? ''"
+        aria-label="API Key 明文"
+        @focus="(e: FocusEvent) => (e.target as HTMLInputElement).select()"
+        @click="(e: MouseEvent) => (e.target as HTMLInputElement).select()"
+      />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton type="primary" @click="showManualCopy = false">关闭</NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -1021,6 +1077,78 @@ onMounted(() => {
   .row-acts {
     justify-content: flex-start;
   }
+
+  .quota-form-head,
+  .quota-form-row {
+    grid-template-columns: 60px 1fr 1fr;
+    gap: 6px;
+  }
+}
+
+/* ── 编辑弹窗内的表单块 ──
+   以下 9 个类在极简改版重写样式时被整体删掉了（模板仍在用），
+   导致编辑弹窗的排版完全失效：名称与状态挤在一起、凭证/模型列表
+   没有高度上限会无限撑长、配额三列表格塌成一列。此处按原设计补回，
+   并统一到极简令牌。 */
+
+/* 名称 + 状态并排 */
+.form-row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+}
+
+/* 绑定凭证 / 可用模型：可滚动的复选列表，限高避免弹窗被撑长 */
+.cred-list,
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+  width: 100%;
+}
+
+.model-list {
+  max-height: 200px;
+}
+
+/* 模型目录的区域切换条 */
+.model-region-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+/* 配额：日 / 月 三列表格（维度名 + 每日 + 每月） */
+.quota-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quota-form-head,
+.quota-form-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.quota-form-row .k {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+/* 模型别名：客户端名 → 上游名，中间一个箭头 */
+.alias-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* ── 弹窗内的键值 / 表单块 ── */
