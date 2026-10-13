@@ -617,8 +617,11 @@ const recentColumns: DataTableColumns<RequestRecord> = [
       <BreakdownList title="按接口" :stats="metrics?.byPath ?? []" empty-hint="暂无请求记录" :loading="firstLoad" />
     </div>
 
-    <!-- ⑤ 明细：近期错误 + 最近请求 -->
-    <div class="grid-auto">
+    <!-- ⑤ 明细：近期错误 + 最近请求。
+         这两块**不并排**：最近请求是 8 列表格（约需 860px），塞进 542px 的半栏
+         会被迫横向滚动，而横向滚动的表格在运维场景里几乎不可读。
+         并排只适合短列表 —— 见上方「按模型 / 按接口」。 -->
+    <div class="stack detail-stack">
       <section class="panel">
         <div class="panel-head">
           <div class="panel-title">近期错误</div>
@@ -671,6 +674,11 @@ const recentColumns: DataTableColumns<RequestRecord> = [
 </template>
 
 <style scoped>
+/* 明细区：两块同属「明细」语义组，用比页面级 stack(40px) 更紧的 32px */
+.detail-stack {
+  gap: 32px;
+}
+
 /* 归档摘要：与主读数带同构，但上下留出与图表的间隔 */
 .summary-stats {
   margin-bottom: 28px;

@@ -507,16 +507,15 @@ function renderCodePanel(model: string): string {
       `<pre><code>${escapeHtml(curlSample(spec, model))}</code></pre></div>`,
   ).join('\n    ');
 
+  // 外层 .code-head 本身就是 flex 行，tab 直接作为其子元素即可 ——
+  // 不再套 .code-tabs / .code-views 两层（新样式表没有它们的规则，
+  // 多出来的 div 会让 tab 栏失去布局）。
   return `<div class="code-panel" data-code-scope>
     <div class="code-head">
-      <div class="code-tabs" role="tablist">
       ${tabs}
-      </div>
       <button class="copy" type="button" data-copy aria-label="复制当前协议的调用示例">复制</button>
     </div>
-    <div class="code-views">
     ${views}
-    </div>
   </div>`;
 }
 

@@ -35,10 +35,17 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 </template>
 
 <style scoped>
+/* 窄屏下选项可能放不下，允许横向滚动而非折行（折行会断开下划线选中态） */
 .seg {
   display: flex;
   gap: 18px;
   border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.seg::-webkit-scrollbar {
+  display: none;
 }
 
 .seg button {

@@ -742,10 +742,18 @@ onMounted(async () => {
   flex-wrap: wrap;
 }
 
+/* 窄屏下 6 个状态项放不下（实测 373px > 容器 334px，会把整页撑出横向滚动）。
+   允许横向滚动而不是折行：折行会让下划线选中态断开，读起来更乱。 */
 .seg {
   display: flex;
   gap: 18px;
   border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.seg::-webkit-scrollbar {
+  display: none;
 }
 
 .seg button {

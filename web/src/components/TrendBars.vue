@@ -265,7 +265,7 @@ const hoveredRows = computed(() => {
 }
 
 .seg.success {
-  background: var(--chart-bar-strong);
+  background: var(--chart-bar);
 }
 
 /* 失败段叠在成功段之上：既用颜色也用高度表达，不单靠颜色传达信息 */
@@ -275,7 +275,7 @@ const hoveredRows = computed(() => {
 }
 
 .seg.plain {
-  background: var(--chart-token);
+  background: var(--accent);
 }
 
 .tooltip {
