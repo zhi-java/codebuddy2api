@@ -341,18 +341,16 @@ a,
   margin-top: 2px;
 }
 
-/* 行内操作：默认隐形，悬停浮现，避免表格被按钮塞满 */
+/* 行内操作：**常显**。
+   曾做成「悬停浮现」以减少表格视觉噪音，但实测两点问题：
+     1. 发现性差 —— 用户不知道该行有操作，反馈为「按钮默认不显示」；
+     2. 选择器绑死在 tr 上，而 Keys 页的行是 <article>，导致那里的按钮
+        永远不出现（opacity 恒为 0）。
+   常显是更稳妥的选择：操作可见性优先于版面清爽。 */
 .row-acts {
   display: flex;
   gap: 2px;
   justify-content: flex-end;
-  opacity: 0;
-  transition: opacity 150ms var(--ease);
-}
-
-tr:hover .row-acts,
-tr:focus-within .row-acts {
-  opacity: 1;
 }
 
 /* 窄屏下面板头的操作区独占一行，内部输入框拉满 */

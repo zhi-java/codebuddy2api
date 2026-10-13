@@ -375,6 +375,40 @@ function toggleIn(list: string[], id: string, checked: boolean): string[] {
 /** 复制到剪贴板（明文 Key 只显示一次，提示里点明复制到了什么） */
 const copy = useCopy();
 
+/**
+ * 关闭明文弹窗前的二次确认。
+ *
+ * 明文只下发一次，误关即永久丢失（只能删掉重建 Key）。此前点遮罩/ESC
+ * 就直接置 null，用户反馈「创建后无法再次复制」——实际是一关就没了。
+ * 现在必须显式确认才能关闭，把「不可逆」这件事挡在动作之前。
+ */
+/**
+ * 复制明文；失败时自动全选输入框内容。
+ *
+ * 明文只在这一次出现，复制失败必须给出**可立即执行的补救**，
+ * 而不是只弹一句提示让用户自己想办法。全选后用户按 Ctrl+C 即可。
+ */
+async function copyKeyPlaintext(): Promise<void> {
+  const text = secret.value?.plaintext ?? '';
+  const ok = await copy(text, '已复制 Key');
+  if (!ok) {
+    const el = document.querySelector<HTMLInputElement>('.secret');
+    el?.focus();
+    el?.select();
+  }
+}
+
+function onSecretModalToggle(show: boolean): void {
+  if (show || !secret.value) return;
+  dialog.warning({
+    title: '关闭后明文将无法再次查看',
+    content: '该 Key 的明文只下发一次。请确认已复制或下载 .env 片段。',
+    positiveText: '我已保存，关闭',
+    negativeText: '返回查看',
+    onPositiveClick: () => { secret.value = null; },
+  });
+}
+
 /** 生成可直接粘贴到客户端的 .env 片段（真实接入时最常用） */
 const envSnippet = computed(() => {
   if (!secret.value) return '';
@@ -578,7 +612,7 @@ onMounted(() => {
             </NTooltip>
           </div>
 
-          <!-- 操作：默认隐形，悬停浮现 —— 避免每行挂五个按钮把列表读散 -->
+          <!-- 操作：常显（可见性优先于版面清爽，见 styles.css 的 .row-acts） -->
           <div class="row-acts">
             <NButton size="tiny" quaternary :loading="busyId === key.id" @click="openEdit(key)">编辑</NButton>
             <NButton size="tiny" quaternary @click="openAlias(key)">别名</NButton>
@@ -825,7 +859,9 @@ onMounted(() => {
       preset="card"
       title="Key 创建成功"
       style="width: min(640px, calc(100vw - 32px))"
-      @update:show="(value: boolean) => !value && (secret = null)"
+      :mask-closable="false"
+      :close-on-esc="false"
+      @update:show="onSecretModalToggle"
     >
       <div class="warn">请立即保存。出于安全，明文仅显示这一次。</div>
       <!-- 用只读输入框而非普通文本：点一下即全选，两种复制都失败时用户还能手动 Ctrl+C。
@@ -839,7 +875,7 @@ onMounted(() => {
         @click="(e: MouseEvent) => (e.target as HTMLInputElement).select()"
       />
       <div class="secret-actions">
-        <NButton size="small" secondary @click="copy(secret?.plaintext ?? '', '已复制 Key')">
+        <NButton size="small" secondary @click="copyKeyPlaintext">
           <template #icon><AppIcon name="copy" :size="14" /></template>
           复制 Key
         </NButton>

@@ -264,15 +264,18 @@ const PUBLIC_CSS = `
     font-size:12px; line-height:1.75; color:var(--text-2); white-space:pre;
   }
 
-  /* ── 模型目录：密集网格，每行 6 个 ── */
+  /* ── 模型目录：区域切换 + 密集网格 ──
+     区域项是 <a>（服务端渲染，无 JS 也要能切换），故选择器必须用 .region a
+     而非 .region button —— 此前写成 button，样式完全没生效，两个区域项
+     退化成带下划线的默认链接。 */
   .region { display:flex; gap:2px; margin-bottom:16px; }
-  .region button {
-    padding:5px 12px; border:none; background:transparent; border-radius:var(--radius-sm);
-    font-size:12.5px; font-weight:550; color:var(--text-3);
+  .region a {
+    display:inline-block; padding:5px 12px; border-radius:var(--radius-sm);
+    font-size:12.5px; font-weight:550; color:var(--text-3); text-decoration:none;
     transition:background var(--dur) var(--ease), color var(--dur) var(--ease);
   }
-  .region button:hover { color:var(--text); }
-  .region button.active { background:var(--bg); color:var(--text); font-weight:620; }
+  .region a:hover { color:var(--text); background:var(--surface-3); }
+  .region a.active { background:var(--surface-3); color:var(--text); font-weight:620; }
 
   .model-grid {
     display:grid; gap:1px;
